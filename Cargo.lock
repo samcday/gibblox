@@ -198,6 +198,7 @@ dependencies = [
  "async-trait",
  "futures-channel",
  "gibblox-core",
+ "tokio",
 ]
 
 [[package]]
