@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gibblox-core",
+    "crates/gibblox-http",
+    "crates/gibblox-cache",
+    "crates/gibblox-cache-store-idb",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.87"
+license = "GPL-3.0-only"
