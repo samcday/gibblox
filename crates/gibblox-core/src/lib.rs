@@ -2,9 +2,14 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, string::String};
+use alloc::string::String;
 use async_trait::async_trait;
 use core::fmt;
+
+mod erofs;
+
+pub use erofs::EroReadAt;
+pub use erofs_rs;
 
 pub type GibbloxResult<T> = core::result::Result<T, GibbloxError>;
 
