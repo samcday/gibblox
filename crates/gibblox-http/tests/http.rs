@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use gibblox_core::BlockReader;
-use gibblox_http::HttpReadAt;
+use gibblox_http::HttpBlockReader;
 
 async fn start_server(data: Vec<u8>) -> (Url, oneshot::Sender<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -110,7 +110,7 @@ fn data_blob(len: usize) -> Vec<u8> {
 async fn http_read_blocks_roundtrip() {
     let data = data_blob(8192);
     let (url, shutdown) = start_server(data.clone()).await;
-    let source = HttpReadAt::new(url, 512).await.expect("http source");
+    let source = HttpBlockReader::new(url, 512).await.expect("http source");
     assert_eq!(source.size_bytes(), data.len() as u64);
 
     let mut buf = vec![0u8; 1024];
@@ -125,7 +125,7 @@ async fn http_read_blocks_roundtrip() {
 async fn http_probe_size_uses_range() {
     let data = data_blob(4096);
     let (url, shutdown) = start_server(data.clone()).await;
-    let source = HttpReadAt::new(url, 512).await.expect("http source");
+    let source = HttpBlockReader::new(url, 512).await.expect("http source");
     assert_eq!(source.size_bytes(), 4096);
     let _ = shutdown.send(());
 }

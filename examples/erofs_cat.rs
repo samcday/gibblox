@@ -3,7 +3,7 @@ use std::io::{self, Write};
 
 use futures::executor::block_on;
 use gibblox_cache::{CachedSource, MemoryCacheStore};
-use gibblox_core::{BlockReader, EroReadAt};
+use gibblox_core::{BlockReader, EroBlockReader};
 use gibblox_file::StdFileBlockReader;
 use tracing::{debug, info, trace};
 use tracing_subscriber::{EnvFilter, fmt};
@@ -32,7 +32,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let source_total_blocks = block_on(source.total_blocks())?;
     let cache = MemoryCacheStore::new(source.block_size(), source_total_blocks)?;
     let cached_source = block_on(CachedSource::new(source, cache))?;
-    let reader = block_on(EroReadAt::new(cached_source, &file_path, 4096))?;
+    let reader = block_on(EroBlockReader::new(cached_source, &file_path, 4096))?;
     let total_blocks = block_on(reader.total_blocks())?;
     info!(
         total_blocks,

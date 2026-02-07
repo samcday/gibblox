@@ -8,7 +8,7 @@ use core::fmt;
 
 mod erofs;
 
-pub use erofs::EroReadAt;
+pub use erofs::EroBlockReader;
 pub use erofs_rs;
 
 pub type GibbloxResult<T> = core::result::Result<T, GibbloxError>;

@@ -7,14 +7,14 @@ use tracing::{info, trace};
 use crate::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
 
 /// File-backed block reader sourced from a file inside an EROFS image.
-pub struct EroReadAt {
+pub struct EroBlockReader {
     block_size: u32,
     file_size_bytes: u64,
     inode: erofs_rs::types::Inode,
     fs: erofs_rs::EroFS<CoreBlockAdapter>,
 }
 
-impl EroReadAt {
+impl EroBlockReader {
     /// Build a block reader for `path` from an EROFS image exposed through `BlockReader`.
     pub async fn new<S: BlockReader + 'static>(
         source: S,
@@ -82,7 +82,7 @@ impl EroReadAt {
 }
 
 #[async_trait]
-impl BlockReader for EroReadAt {
+impl BlockReader for EroBlockReader {
     fn block_size(&self) -> u32 {
         self.block_size
     }

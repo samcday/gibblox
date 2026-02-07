@@ -26,10 +26,10 @@ To gibblox you will always be just another block.
 ## Usage (native)
 ```rust
 use gibblox_core::BlockReader;
-use gibblox_http::HttpReadAt;
+use gibblox_http::HttpBlockReader;
 
 # async fn example() -> anyhow::Result<()> {
-let source = HttpReadAt::new("https://example.com/rootfs.img".parse()?, 4096).await?;
+let source = HttpBlockReader::new("https://example.com/rootfs.img".parse()?, 4096).await?;
 let mut buf = vec![0u8; 4096];
 source.read_blocks(0, &mut buf).await?;
 # Ok(())

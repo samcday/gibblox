@@ -15,14 +15,14 @@ mod native;
 mod wasm;
 
 /// HTTP-backed read-only gibblox source.
-pub struct HttpReadAt {
+pub struct HttpBlockReader {
     url: Url,
     block_size: u32,
     size_bytes: u64,
     inner: HttpClient,
 }
 
-impl HttpReadAt {
+impl HttpBlockReader {
     /// Construct a new HTTP source. `url` must be absolute and point to the backing object.
     pub async fn new(url: Url, block_size: u32) -> GibbloxResult<Self> {
         if block_size == 0 || !block_size.is_power_of_two() {
@@ -86,7 +86,7 @@ impl HttpReadAt {
 }
 
 #[async_trait]
-impl BlockReader for HttpReadAt {
+impl BlockReader for HttpBlockReader {
     fn block_size(&self) -> u32 {
         self.block_size
     }
