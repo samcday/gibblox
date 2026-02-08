@@ -277,10 +277,7 @@ impl<R: ReadAt> EroFS<R> {
                     &mut addr_buf,
                 )
                 .await?;
-                let chunk_addr =
-                    i32::from_le_bytes(addr_buf.try_into().map_err(|_| {
-                        Error::OutOfBounds("failed to get chunk address".to_string())
-                    })?);
+                let chunk_addr = i32::from_le_bytes(addr_buf);
                 if chunk_addr <= 0 {
                     return Err(Error::CorruptedData(
                         "sparse chunks are not supported".to_string(),
@@ -351,14 +348,13 @@ impl<R: ReadAt> EroFS<R> {
     ) -> Result<Arc<Vec<u8>>> {
         {
             let guard = self.compressed_cache.lock();
-            if let Some(cache) = &*guard {
-                if cache.inode_id == inode_id
+            if let Some(cache) = &*guard
+                && cache.inode_id == inode_id
                     && cache.logical_start == extent.logical_start
                     && cache.logical_len == extent.logical_len
                 {
                     return Ok(Arc::clone(&cache.data));
                 }
-            }
         }
 
         let mut compressed = vec![0u8; extent.physical_len];
@@ -682,13 +678,14 @@ impl<R: ReadAt> EroFS<R> {
         }
 
         let ebase = meta.map_header_end;
-        let compacted_4b_initial = (((32 - (ebase as usize % 32)) / 4) & 7) as usize;
-        let mut compacted_2b = 0usize;
-        if (meta.map_header.advise & Z_EROFS_ADVISE_COMPACTED_2B) != 0
+        let compacted_4b_initial = ((32 - (ebase as usize % 32)) / 4) & 7;
+        let compacted_2b = if (meta.map_header.advise & Z_EROFS_ADVISE_COMPACTED_2B) != 0
             && compacted_4b_initial < total_lclusters
         {
-            compacted_2b = (total_lclusters - compacted_4b_initial) & !15;
-        }
+            (total_lclusters - compacted_4b_initial) & !15
+        } else {
+            0usize
+        };
 
         let mut pos = ebase;
         let mut amortizedshift = 2usize;

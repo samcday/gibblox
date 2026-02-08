@@ -21,9 +21,9 @@ impl<'a> ReadCursor<'a> {
             .get(self.pos..end)
             .ok_or_else(|| Error::OutOfBounds(String::from("failed to read bytes from image")))?;
         self.pos = end;
-        Ok(slice
+        slice
             .try_into()
-            .map_err(|_| Error::OutOfBounds(String::from("failed to read bytes from image")))?)
+            .map_err(|_| Error::OutOfBounds(String::from("failed to read bytes from image")))
     }
 
     pub fn read_u8(&mut self) -> Result<u8> {
