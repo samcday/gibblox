@@ -42,7 +42,7 @@ async fn start_server(data: Vec<u8>) -> (Url, oneshot::Sender<()>) {
             }
         }
     });
-    let url = Url::parse(&format!("http://{}", addr)).expect("url parse");
+    let url = Url::parse(&format!("http://{addr}")).expect("url parse");
     (url, shutdown_tx)
 }
 
@@ -71,7 +71,7 @@ async fn handle_request(
             (
                 StatusCode::PARTIAL_CONTENT,
                 Bytes::copy_from_slice(slice),
-                Some(format!("bytes {}-{}/{}", start, end, total_len)),
+                Some(format!("bytes {start}-{end}/{total_len}")),
             )
         }
         _ => (StatusCode::OK, Bytes::copy_from_slice(&data), None),
