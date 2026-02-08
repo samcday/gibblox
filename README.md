@@ -27,7 +27,7 @@ To gibblox you will always be just another block.
 
 ## Usage (native)
 ```rust
-use gibblox_core::BlockReader;
+use gibblox_core::{BlockReader, ReadContext};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_http::HttpBlockReader;
@@ -37,7 +37,7 @@ let source = HttpBlockReader::new("https://example.com/rootfs.img".parse()?, 409
 let cache = StdCacheOps::open_default_for_reader(&source).await?;
 let source = CachedBlockReader::new(source, cache).await?;
 let mut buf = vec![0u8; 4096];
-source.read_blocks(0, &mut buf).await?;
+source.read_blocks(0, &mut buf, ReadContext::FOREGROUND).await?;
 # Ok(())
 # }
 ```

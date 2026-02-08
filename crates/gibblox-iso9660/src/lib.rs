@@ -4,7 +4,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
+use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
 use tracing::{info, trace};
 
 const ISO_SECTOR_SIZE: usize = 2048;
@@ -160,7 +160,12 @@ impl BlockReader for IsoFileBlockReader {
         write!(out, "):{}", self.file_path)
     }
 
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        _ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -240,7 +245,7 @@ impl SourceByteReader {
             let lba = (aligned_start as usize + filled) / self.block_size;
             let read = self
                 .inner
-                .read_blocks(lba as u64, &mut scratch[filled..])
+                .read_blocks(lba as u64, &mut scratch[filled..], ReadContext::FOREGROUND)
                 .await?;
             if read == 0 {
                 return Err(GibbloxError::with_message(
@@ -520,7 +525,12 @@ mod tests {
             write!(out, "fake-iso:{}:{}", self.block_size, self.data.len())
         }
 
-        async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
+        async fn read_blocks(
+            &self,
+            lba: u64,
+            buf: &mut [u8],
+            _ctx: ReadContext,
+        ) -> GibbloxResult<usize> {
             if !buf.len().is_multiple_of(self.block_size as usize) {
                 return Err(GibbloxError::with_message(
                     GibbloxErrorKind::InvalidInput,
@@ -561,12 +571,14 @@ mod tests {
         assert_eq!(block_on(source.total_blocks()).expect("total blocks"), 3);
 
         let mut buf = vec![0u8; 8];
-        let read = block_on(source.read_blocks(0, &mut buf)).expect("read first blocks");
+        let read = block_on(source.read_blocks(0, &mut buf, ReadContext::FOREGROUND))
+            .expect("read first blocks");
         assert_eq!(read, 8);
         assert_eq!(&buf, b"hello wo");
 
         let mut tail = vec![0u8; 4];
-        let read = block_on(source.read_blocks(2, &mut tail)).expect("read tail block");
+        let read = block_on(source.read_blocks(2, &mut tail, ReadContext::FOREGROUND))
+            .expect("read tail block");
         assert_eq!(read, 4);
         assert_eq!(&tail, b"rld\0");
     }

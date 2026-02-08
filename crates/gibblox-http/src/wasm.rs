@@ -1,7 +1,8 @@
 use crate::HttpError;
 use futures_util::FutureExt;
+use gibblox_core::{GibbloxError, ReadContext, ReadPriority};
 use http::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
-use js_sys::{Promise, Uint8Array};
+use js_sys::{Promise, Reflect, Uint8Array};
 use std::{
     future::Future,
     ops::RangeInclusive,
@@ -9,7 +10,7 @@ use std::{
     task::{Context, Poll},
 };
 use url::Url;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
 
@@ -67,7 +68,7 @@ impl Client {
     pub async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
         // Prefer a ranged GET to coax Content-Range, fall back to HEAD/Content-Length.
         let resp = self
-            .send_request(url, Some("bytes=0-0"), "GET")
+            .send_request(url, Some("bytes=0-0"), "GET", ReadContext::FOREGROUND)
             .await
             .map_err(|err| HttpError::Msg(format!("probe request: {err}")))?;
         tracing::debug!(%url, status = resp.status(), "http probe response");
@@ -86,7 +87,7 @@ impl Client {
         }
         // Final fallback: HEAD (best effort)
         let resp = self
-            .send_request(url, None, "HEAD")
+            .send_request(url, None, "HEAD", ReadContext::FOREGROUND)
             .await
             .map_err(|err| HttpError::Msg(format!("probe HEAD: {err}")))?;
         if resp.ok() {
@@ -104,10 +105,11 @@ impl Client {
         url: &Url,
         range: RangeInclusive<u64>,
         buf: &mut [u8],
+        ctx: ReadContext,
     ) -> Result<usize, HttpError> {
         let header = format!("bytes={}-{}", range.start(), range.end());
         let resp = self
-            .send_request(url, Some(&header), "GET")
+            .send_request(url, Some(&header), "GET", ctx)
             .await
             .map_err(|err| HttpError::Msg(format!("GET: {err}")))?;
         tracing::trace!(
@@ -138,8 +140,9 @@ impl Client {
         url: &Url,
         range: Option<&str>,
         method: &str,
+        ctx: ReadContext,
     ) -> Result<SendResponse, HttpError> {
-        let promise = build_request_promise(url, range, method)?;
+        let promise = build_request_promise(url, range, method, ctx)?;
         let resp = SendJsFuture::from(promise)
             .await
             .map_err(|err| HttpError::Msg(format!("fetch await: {err:?}")))?;
@@ -154,6 +157,7 @@ fn build_request_promise(
     url: &Url,
     range: Option<&str>,
     method: &str,
+    ctx: ReadContext,
 ) -> Result<Promise, HttpError> {
     let window = web_sys::window().ok_or_else(|| HttpError::Msg("window unavailable".into()))?;
     let init = RequestInit::new();
@@ -165,10 +169,32 @@ fn build_request_promise(
             .append(RANGE.as_str(), range)
             .map_err(|err| HttpError::Msg(format!("set range: {err:?}")))?;
     }
+    headers
+        .append("Priority", priority_header_value(ctx))
+        .map_err(|err| HttpError::Msg(format!("set priority: {err:?}")))?;
     init.set_headers(&headers);
+    let _ = Reflect::set(
+        init.as_ref(),
+        &JsValue::from_str("priority"),
+        &JsValue::from_str(fetch_priority_value(ctx)),
+    );
     let request = Request::new_with_str_and_init(url.as_str(), &init)
         .map_err(|err| HttpError::Msg(format!("build request: {err:?}")))?;
     Ok(window.fetch_with_request(&request))
+}
+
+fn priority_header_value(ctx: ReadContext) -> &'static str {
+    match ctx.priority {
+        ReadPriority::Foreground => "u=0, i",
+        ReadPriority::Background => "u=7",
+    }
+}
+
+fn fetch_priority_value(ctx: ReadContext) -> &'static str {
+    match ctx.priority {
+        ReadPriority::Foreground => "high",
+        ReadPriority::Background => "low",
+    }
 }
 
 fn parse_content_range_total(hdr: &str) -> Option<u64> {

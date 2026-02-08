@@ -1,5 +1,6 @@
 use crate::HttpError;
 use gibblox_core::{GibbloxError, GibbloxErrorKind};
+use gibblox_core::{ReadContext, ReadPriority};
 use http::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::Client as ReqwestClient;
 use std::ops::RangeInclusive;
@@ -76,12 +77,15 @@ impl Client {
         url: &Url,
         range: RangeInclusive<u64>,
         buf: &mut [u8],
+        ctx: ReadContext,
     ) -> Result<usize, HttpError> {
         let header = format!("bytes={}-{}", range.start(), range.end());
+        let priority = priority_header_value(ctx);
         let resp = self
             .inner
             .get(url.as_str())
             .header(RANGE, header)
+            .header("Priority", priority)
             .send()
             .await
             .map_err(|err| HttpError::Msg(format!("GET: {err}")))?;
@@ -97,6 +101,13 @@ impl Client {
         buf[..read].copy_from_slice(&bytes[..read]);
         tracing::trace!(read, expected = buf.len(), "http read done");
         Ok(read)
+    }
+}
+
+fn priority_header_value(ctx: ReadContext) -> &'static str {
+    match ctx.priority {
+        ReadPriority::Foreground => "u=0, i",
+        ReadPriority::Background => "u=7",
     }
 }
 

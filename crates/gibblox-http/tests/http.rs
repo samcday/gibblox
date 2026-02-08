@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use url::Url;
 
-use gibblox_core::BlockReader;
+use gibblox_core::{BlockReader, ReadContext};
 use gibblox_http::HttpBlockReader;
 
 async fn start_server(data: Vec<u8>) -> (Url, oneshot::Sender<()>) {
@@ -114,7 +114,10 @@ async fn http_read_blocks_roundtrip() {
     assert_eq!(source.size_bytes(), data.len() as u64);
 
     let mut buf = vec![0u8; 1024];
-    let read = source.read_blocks(2, &mut buf).await.expect("read blocks");
+    let read = source
+        .read_blocks(2, &mut buf, ReadContext::FOREGROUND)
+        .await
+        .expect("read blocks");
     assert_eq!(read, buf.len());
     assert_eq!(&buf[..], &data[1024..2048]);
 

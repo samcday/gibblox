@@ -1,5 +1,5 @@
 use gibblox_cache::{CachedBlockReader, MemoryCacheOps};
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
+use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Notify;
@@ -62,7 +62,12 @@ impl BlockReader for FakeReader {
         )
     }
 
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        _ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if let Some(gate) = &self.gate {
             gate.notified().await;
@@ -99,12 +104,18 @@ async fn cache_hit_after_miss() {
         .expect("cached source");
 
     let mut buf = vec![0u8; 1024];
-    let read = cached.read_blocks(2, &mut buf).await.expect("read blocks");
+    let read = cached
+        .read_blocks(2, &mut buf, ReadContext::FOREGROUND)
+        .await
+        .expect("read blocks");
     assert_eq!(read, buf.len());
     assert_eq!(reads.load(Ordering::SeqCst), 1);
 
     let mut buf2 = vec![0u8; 1024];
-    let read2 = cached.read_blocks(2, &mut buf2).await.expect("read blocks");
+    let read2 = cached
+        .read_blocks(2, &mut buf2, ReadContext::FOREGROUND)
+        .await
+        .expect("read blocks");
     assert_eq!(read2, buf2.len());
     assert_eq!(buf, buf2);
     assert_eq!(reads.load(Ordering::SeqCst), 1);
@@ -126,11 +137,17 @@ async fn cache_inflight_dedupes_reads() {
     let cached_b = Arc::clone(&cached);
     let task_a = tokio::spawn(async move {
         let mut buf = vec![0u8; 512];
-        cached_a.read_blocks(1, &mut buf).await.expect("read a");
+        cached_a
+            .read_blocks(1, &mut buf, ReadContext::FOREGROUND)
+            .await
+            .expect("read a");
     });
     let task_b = tokio::spawn(async move {
         let mut buf = vec![0u8; 512];
-        cached_b.read_blocks(1, &mut buf).await.expect("read b");
+        cached_b
+            .read_blocks(1, &mut buf, ReadContext::FOREGROUND)
+            .await
+            .expect("read b");
     });
 
     tokio::task::yield_now().await;
@@ -153,7 +170,10 @@ async fn cache_persists_across_instances_after_flush() {
         .expect("cached source A");
 
     let mut first = vec![0u8; 512];
-    cached_a.read_blocks(0, &mut first).await.expect("read A");
+    cached_a
+        .read_blocks(0, &mut first, ReadContext::FOREGROUND)
+        .await
+        .expect("read A");
     assert_eq!(reads_a.load(Ordering::SeqCst), 1);
     cached_a.flush_cache().await.expect("flush cache A");
     drop(cached_a);
@@ -165,7 +185,10 @@ async fn cache_persists_across_instances_after_flush() {
         .expect("cached source B");
 
     let mut second = vec![0u8; 512];
-    cached_b.read_blocks(0, &mut second).await.expect("read B");
+    cached_b
+        .read_blocks(0, &mut second, ReadContext::FOREGROUND)
+        .await
+        .expect("read B");
     assert_eq!(reads_b.load(Ordering::SeqCst), 0);
     assert_eq!(first, second);
 }
@@ -181,7 +204,10 @@ async fn dirty_on_open_clears_bitmap() {
         .expect("cached source A");
 
     let mut first = vec![0u8; 512];
-    cached_a.read_blocks(0, &mut first).await.expect("read A");
+    cached_a
+        .read_blocks(0, &mut first, ReadContext::FOREGROUND)
+        .await
+        .expect("read A");
     assert_eq!(reads_a.load(Ordering::SeqCst), 1);
     drop(cached_a);
 
@@ -192,7 +218,10 @@ async fn dirty_on_open_clears_bitmap() {
         .expect("cached source B");
 
     let mut second = vec![0u8; 512];
-    cached_b.read_blocks(0, &mut second).await.expect("read B");
+    cached_b
+        .read_blocks(0, &mut second, ReadContext::FOREGROUND)
+        .await
+        .expect("read B");
     assert_eq!(reads_b.load(Ordering::SeqCst), 1);
     assert_eq!(first, second);
 }
@@ -206,7 +235,10 @@ async fn identity_mismatch_resets_cache_file() {
         .await
         .expect("cached source A");
     let mut first = vec![0u8; 512];
-    cached_a.read_blocks(1, &mut first).await.expect("read A");
+    cached_a
+        .read_blocks(1, &mut first, ReadContext::FOREGROUND)
+        .await
+        .expect("read A");
     cached_a.flush_cache().await.expect("flush cache A");
 
     let reader_b = FakeReader::new_with_identity("fake://disk/id-b", 512, 4, None);
@@ -216,12 +248,18 @@ async fn identity_mismatch_resets_cache_file() {
         .expect("cached source B");
 
     let mut second = vec![0u8; 512];
-    cached_b.read_blocks(1, &mut second).await.expect("read B");
+    cached_b
+        .read_blocks(1, &mut second, ReadContext::FOREGROUND)
+        .await
+        .expect("read B");
     assert_eq!(reads_b.load(Ordering::SeqCst), 1);
     assert_eq!(first, second);
 
     let mut third = vec![0u8; 512];
-    cached_b.read_blocks(1, &mut third).await.expect("read C");
+    cached_b
+        .read_blocks(1, &mut third, ReadContext::FOREGROUND)
+        .await
+        .expect("read C");
     assert_eq!(reads_b.load(Ordering::SeqCst), 1);
     assert_eq!(second, third);
 }

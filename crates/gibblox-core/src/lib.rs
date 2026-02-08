@@ -161,6 +161,28 @@ pub fn block_identity_string<R: BlockReader + ?Sized>(reader: &R) -> String {
     value
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ReadPriority {
+    #[default]
+    Foreground,
+    Background,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ReadContext {
+    pub priority: ReadPriority,
+}
+
+impl ReadContext {
+    pub const FOREGROUND: Self = Self {
+        priority: ReadPriority::Foreground,
+    };
+
+    pub const BACKGROUND: Self = Self {
+        priority: ReadPriority::Background,
+    };
+}
+
 #[async_trait]
 pub trait BlockReader: Send + Sync {
     /// Logical block size in bytes.
@@ -173,7 +195,8 @@ pub trait BlockReader: Send + Sync {
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result;
 
     /// Read one or more blocks starting at `lba` into `buf`.
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize>;
+    async fn read_blocks(&self, lba: u64, buf: &mut [u8], ctx: ReadContext)
+    -> GibbloxResult<usize>;
 }
 
 #[async_trait]
@@ -193,7 +216,12 @@ where
         (**self).write_identity(out)
     }
 
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
-        (**self).read_blocks(lba, buf).await
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        (**self).read_blocks(lba, buf, ctx).await
     }
 }

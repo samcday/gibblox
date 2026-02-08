@@ -10,7 +10,7 @@ use alloc::{
 use async_trait::async_trait;
 use tracing::{info, trace};
 
-use crate::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
+use crate::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
 
 /// File-backed block reader sourced from a file inside an EROFS image.
 pub struct EroBlockReader {
@@ -110,7 +110,12 @@ impl BlockReader for EroBlockReader {
         )
     }
 
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        _ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -176,7 +181,7 @@ impl erofs_rs::ReadAt for CoreBlockAdapter {
             let lba = (start as usize + filled) / self.block_size;
             let read = self
                 .inner
-                .read_blocks(lba as u64, &mut scratch[filled..])
+                .read_blocks(lba as u64, &mut scratch[filled..], ReadContext::FOREGROUND)
                 .await
                 .map_err(|err| erofs_rs::Error::OutOfBounds(err.to_string()))?;
             if read == 0 {

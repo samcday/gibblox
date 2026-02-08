@@ -4,7 +4,7 @@
 //! and wasm32 (fetch) targets.
 
 use async_trait::async_trait;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
+use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
 use std::ops::RangeInclusive;
 use tracing::debug;
 use url::Url;
@@ -111,7 +111,12 @@ impl BlockReader for HttpBlockReader {
         write!(out, "http:{}", self.url.as_str())
     }
 
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -128,7 +133,7 @@ impl BlockReader for HttpBlockReader {
         );
         let read = self
             .inner
-            .read_range(&self.url, range.clone(), buf)
+            .read_range(&self.url, range.clone(), buf, ctx)
             .await
             .map_err(map_http_err("read range"))?;
         if read != buf.len() {
@@ -178,12 +183,13 @@ impl HttpClient {
         url: &Url,
         range: RangeInclusive<u64>,
         buf: &mut [u8],
+        ctx: ReadContext,
     ) -> Result<usize, HttpError> {
         match self {
             #[cfg(not(target_arch = "wasm32"))]
-            HttpClient::Native(c) => c.read_range(url, range, buf).await,
+            HttpClient::Native(c) => c.read_range(url, range, buf, ctx).await,
             #[cfg(target_arch = "wasm32")]
-            HttpClient::Wasm(c) => c.read_range(url, range, buf).await,
+            HttpClient::Wasm(c) => c.read_range(url, range, buf, ctx).await,
         }
     }
 }

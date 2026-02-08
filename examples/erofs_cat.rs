@@ -5,7 +5,7 @@ use std::sync::Arc;
 use futures::executor::block_on;
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
-use gibblox_core::{BlockReader, EroBlockReader};
+use gibblox_core::{BlockReader, EroBlockReader, ReadContext};
 use gibblox_file::StdFileBlockReader;
 use tracing::{debug, info, trace};
 use tracing_subscriber::{EnvFilter, fmt};
@@ -52,7 +52,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     for lba in 0..total_blocks {
         trace!(lba, remaining, "reading next logical block");
-        let read = block_on(reader.read_blocks(lba, &mut block))?;
+        let read = block_on(reader.read_blocks(lba, &mut block, ReadContext::FOREGROUND))?;
         let write_len = (read as u64).min(remaining) as usize;
         debug!(lba, read, write_len, "writing block bytes to stdout");
         lock.write_all(&block[..write_len])?;

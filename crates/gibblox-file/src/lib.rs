@@ -6,7 +6,7 @@ use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
+use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
 use tracing::{debug, trace};
 
 /// Simple block-aligned source wrapper over `std::fs::File`.
@@ -76,7 +76,12 @@ impl BlockReader for StdFileBlockReader {
         write!(out, "file:{}", self.identity_path)
     }
 
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        _ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }

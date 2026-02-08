@@ -12,7 +12,8 @@ use core::{
 };
 use futures_channel::oneshot;
 use gibblox_core::{
-    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, derive_block_identity_id,
+    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+    derive_block_identity_id,
 };
 use tracing::trace;
 
@@ -378,7 +379,11 @@ where
         Ok(())
     }
 
-    async fn fetch_and_populate(&self, ranges: &[(u64, u64)]) -> GibbloxResult<()> {
+    async fn fetch_and_populate(
+        &self,
+        ranges: &[(u64, u64)],
+        ctx: ReadContext,
+    ) -> GibbloxResult<()> {
         let bs = self.block_size_usize();
         for (start_block, len_blocks) in ranges {
             trace!(
@@ -390,7 +395,7 @@ where
             })?;
             let mut buf = vec![0u8; expected_bytes];
             let result = async {
-                let read = self.inner.read_blocks(*start_block, &mut buf).await?;
+                let read = self.inner.read_blocks(*start_block, &mut buf, ctx).await?;
                 if read != expected_bytes {
                     return Err(GibbloxError::with_message(
                         GibbloxErrorKind::Io,
@@ -450,7 +455,12 @@ where
         write_cached_identity(&self.inner, out)
     }
 
-    async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
         let blocks = self.blocks_from_len(buf.len())?;
         if blocks == 0 {
             return Ok(0);
@@ -467,7 +477,8 @@ where
 
         let (to_fetch, waiters) = self.mark_in_flight(&missing);
         if !to_fetch.is_empty() {
-            self.fetch_and_populate(&Self::coalesce(&to_fetch)).await?;
+            self.fetch_and_populate(&Self::coalesce(&to_fetch), ctx)
+                .await?;
         }
         for waiter in waiters {
             let _ = waiter.await;
