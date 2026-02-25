@@ -20,6 +20,8 @@ include = [
     "src/*.rs",
     "src/iters",
     "src/journal",
+    "examples/cat.rs",
+    "tests/integration/*.rs",
     "LICENSE-APACHE",
     "LICENSE-MIT",
 ]

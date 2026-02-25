@@ -249,8 +249,8 @@ publish-dry-run:
     patch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     PY
 
-        echo "==> cargo publish -p $package --locked --dry-run"
-        cargo publish -p "$package" --locked --dry-run --config "$patch_file"
+        echo "==> cargo package -p $package --locked"
+        cargo package -p "$package" --locked --config "$patch_file"
         rm -f "$patch_file"
     done
 
