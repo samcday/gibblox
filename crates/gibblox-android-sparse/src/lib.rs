@@ -570,7 +570,7 @@ fn validate_sparse_header(header: &SparseHeader) -> GibbloxResult<()> {
             "sparse chunk header is smaller than minimum size",
         ));
     }
-    if header.blk_sz == 0 || !header.blk_sz.is_power_of_two() || (header.blk_sz % 4) != 0 {
+    if header.blk_sz == 0 || !header.blk_sz.is_power_of_two() || !header.blk_sz.is_multiple_of(4) {
         return Err(GibbloxError::with_message(
             GibbloxErrorKind::InvalidInput,
             "sparse block size must be a non-zero power of two and a multiple of 4",
@@ -630,7 +630,7 @@ async fn read_source_exact<S: BlockReader>(
     }
 
     let bs = source_block_size as u64;
-    if (offset % bs) == 0 && out.len().is_multiple_of(source_block_size) {
+    if offset.is_multiple_of(bs) && out.len().is_multiple_of(source_block_size) {
         read_source_full_blocks(source, source_block_size, offset / bs, out, ctx).await?;
         return Ok(());
     }

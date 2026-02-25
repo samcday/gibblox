@@ -11,7 +11,6 @@
 //! extern crate alloc;
 //! use erofs_rs::EroFS;
 //! use erofs_rs::ReadAt;
-//! # extern crate alloc;
 //! use alloc::sync::Arc;
 //!
 //! # struct MemReader(Arc<[u8]>);

@@ -576,7 +576,7 @@ impl ByteReader {
         }
 
         let bs = self.block_size as u64;
-        if (offset % bs) == 0 && out.len().is_multiple_of(self.block_size) {
+        if offset.is_multiple_of(bs) && out.len().is_multiple_of(self.block_size) {
             self.read_full_blocks(offset / bs, out, ctx).await?;
             return Ok(());
         }
@@ -889,7 +889,7 @@ fn parse_index_records(index_bytes: &[u8]) -> GibbloxResult<Vec<XzIndexRecord>> 
         });
     }
 
-    while pos % 4 != 0 {
+    while !pos.is_multiple_of(4) {
         let Some(byte) = index_bytes.get(pos) else {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -1012,7 +1012,7 @@ fn build_stream_footer(
     stream_flags: [u8; 2],
     index_size: usize,
 ) -> GibbloxResult<[u8; XZ_FOOTER_LEN]> {
-    if index_size == 0 || index_size % 4 != 0 {
+    if index_size == 0 || !index_size.is_multiple_of(4) {
         return Err(GibbloxError::with_message(
             GibbloxErrorKind::InvalidInput,
             "invalid synthetic XZ index size",

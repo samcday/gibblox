@@ -62,7 +62,7 @@ impl ByteRangeReader {
             ));
         }
 
-        if (offset % bs) == 0 && out.len().is_multiple_of(self.block_size) {
+        if offset.is_multiple_of(bs) && out.len().is_multiple_of(self.block_size) {
             self.read_full_blocks(offset / bs, out, ctx).await?;
             return Ok(());
         }
