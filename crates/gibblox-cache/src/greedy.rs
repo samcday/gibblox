@@ -8,7 +8,7 @@ use core::{
     pin::Pin,
     task::{Context, Poll},
 };
-use futures_channel::mpsc::{self, Receiver, Sender};
+use futures_channel::mpsc::{self, Receiver, Sender, TryRecvError};
 use futures_util::stream::StreamExt;
 use gibblox_core::{BlockReader, GibbloxResult, ReadContext};
 use tracing::{debug, trace};
@@ -260,16 +260,16 @@ async fn hot_worker_loop<S, C>(
 
         // Drain channel to get freshest lba (discard stale hints)
         loop {
-            match rx.try_next() {
-                Ok(Some(newer_lba)) => {
+            match rx.try_recv() {
+                Ok(newer_lba) => {
                     current_lba = newer_lba;
                 }
-                Ok(None) => {
+                Err(TryRecvError::Closed) => {
                     // Channel closed
                     debug!("hot worker channel closed during drain, exiting");
                     return;
                 }
-                Err(_) => {
+                Err(TryRecvError::Empty) => {
                     // Channel empty, we have the freshest lba
                     break;
                 }
@@ -314,12 +314,12 @@ async fn hot_worker_loop<S, C>(
             yield_now().await;
 
             // Break early if new hint arrived (react to fresh access)
-            match rx.try_next() {
-                Ok(Some(_)) | Ok(None) => {
+            match rx.try_recv() {
+                Ok(_) | Err(TryRecvError::Closed) => {
                     // New data or channel closed, break to outer loop
                     break;
                 }
-                Err(_) => {
+                Err(TryRecvError::Empty) => {
                     // Channel empty, continue widening
                 }
             }
