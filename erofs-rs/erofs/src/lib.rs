@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 //! A pure Rust library for reading EROFS (Enhanced Read-Only File System) images.
 //!
@@ -8,9 +8,9 @@
 //! # Example
 //!
 //! ```no_run
+//! extern crate alloc;
 //! use erofs_rs::EroFS;
 //! use erofs_rs::ReadAt;
-//! # extern crate alloc;
 //! use alloc::sync::Arc;
 //!
 //! # struct MemReader(Arc<[u8]>);

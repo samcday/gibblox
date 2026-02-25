@@ -2,14 +2,25 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 use alloc::{boxed::Box, string::String, sync::Arc};
 use async_trait::async_trait;
 use core::{fmt, hash::Hasher};
 
+mod byte_range;
 mod erofs;
+mod gpt;
+mod lru;
+mod paged;
 
+pub use byte_range::ByteRangeReader;
 pub use erofs::EroBlockReader;
 pub use erofs_rs;
+pub use gpt::{GptBlockReader, GptPartitionSelector};
+pub use lru::{LruBlockReader, LruConfig};
+pub use paged::{PagedBlockConfig, PagedBlockReader};
 
 pub type GibbloxResult<T> = core::result::Result<T, GibbloxError>;
 
@@ -164,8 +175,9 @@ pub fn block_identity_string<R: BlockReader + ?Sized>(reader: &R) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ReadPriority {
     #[default]
-    Foreground,
-    Background,
+    High,
+    Medium,
+    Low,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -175,11 +187,15 @@ pub struct ReadContext {
 
 impl ReadContext {
     pub const FOREGROUND: Self = Self {
-        priority: ReadPriority::Foreground,
+        priority: ReadPriority::High,
+    };
+
+    pub const READAHEAD: Self = Self {
+        priority: ReadPriority::Medium,
     };
 
     pub const BACKGROUND: Self = Self {
-        priority: ReadPriority::Background,
+        priority: ReadPriority::Low,
     };
 }
 

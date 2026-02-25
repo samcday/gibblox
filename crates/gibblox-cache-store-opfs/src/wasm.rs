@@ -1,84 +1,53 @@
 use async_trait::async_trait;
 use gibblox_cache::{CacheOps, derive_cached_reader_identity_id};
 use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
-use js_sys::{Promise, Uint8Array};
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
-use wasm_bindgen::prelude::*;
+use std::sync::{Arc, Mutex};
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
+use web_sys::{
+    FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetDirectoryOptions,
+    FileSystemGetFileOptions, FileSystemReadWriteOptions, FileSystemSyncAccessHandle,
+    WorkerGlobalScope,
+};
 
 const JS_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-#[wasm_bindgen(inline_js = r#"
-export async function gibbloxOpfsOpen(name) {
-  const root = await navigator.storage.getDirectory();
-  const dir = await root.getDirectoryHandle("gibblox", { create: true });
-  return await dir.getFileHandle(name, { create: true });
-}
-
-export async function gibbloxOpfsReadAt(handle, offset, len) {
-  const start = Number(offset);
-  const size = Number(len);
-  const file = await handle.getFile();
-  const blob = file.slice(start, start + size);
-  const buffer = await blob.arrayBuffer();
-  return new Uint8Array(buffer);
-}
-
-export async function gibbloxOpfsWriteAt(handle, offset, bytes) {
-  const stream = await handle.createWritable({ keepExistingData: true });
-  await stream.seek(Number(offset));
-  await stream.write(bytes);
-  await stream.close();
-}
-
-export async function gibbloxOpfsSetLen(handle, len) {
-  const stream = await handle.createWritable({ keepExistingData: true });
-  await stream.truncate(Number(len));
-  await stream.close();
-}
-
-export async function gibbloxOpfsFlush(_handle) {
-  return;
-}
-"#)]
-extern "C" {
-    #[wasm_bindgen(catch, js_name = gibbloxOpfsOpen)]
-    fn js_opfs_open(name: &str) -> Result<Promise, JsValue>;
-
-    #[wasm_bindgen(catch, js_name = gibbloxOpfsReadAt)]
-    fn js_opfs_read_at(handle: &JsValue, offset: f64, len: f64) -> Result<Promise, JsValue>;
-
-    #[wasm_bindgen(catch, js_name = gibbloxOpfsWriteAt)]
-    fn js_opfs_write_at(
-        handle: &JsValue,
-        offset: f64,
-        bytes: &Uint8Array,
-    ) -> Result<Promise, JsValue>;
-
-    #[wasm_bindgen(catch, js_name = gibbloxOpfsSetLen)]
-    fn js_opfs_set_len(handle: &JsValue, len: f64) -> Result<Promise, JsValue>;
-
-    #[wasm_bindgen(catch, js_name = gibbloxOpfsFlush)]
-    fn js_opfs_flush(handle: &JsValue) -> Result<Promise, JsValue>;
-}
-
-/// OPFS-backed cache file implementation for wasm web targets.
+/// OPFS-backed cache file implementation for wasm web worker targets.
 pub struct OpfsCacheOps {
-    handle: SendJsValue,
+    handle: Arc<SyncHandle>,
 }
 
 impl OpfsCacheOps {
     /// Open or create an OPFS cache file under the `gibblox` origin-private directory.
     pub async fn open(cache_id: u32) -> GibbloxResult<Self> {
-        let name = cache_file_name(cache_id);
-        let promise = js_opfs_open(&name).map_err(js_io)?;
-        let handle = SendJsFuture::from(promise).await.map_err(js_io)?;
+        let root = get_root_directory().await?;
+
+        let dir_opts = FileSystemGetDirectoryOptions::new();
+        dir_opts.set_create(true);
+        let gibblox_dir =
+            JsFuture::from(root.get_directory_handle_with_options("gibblox", &dir_opts))
+                .await
+                .map_err(js_io)?
+                .dyn_into::<FileSystemDirectoryHandle>()
+                .map_err(js_io)?;
+
+        let file_opts = FileSystemGetFileOptions::new();
+        file_opts.set_create(true);
+        let name = format!("{:08x}.bin", cache_id);
+        let file = JsFuture::from(gibblox_dir.get_file_handle_with_options(&name, &file_opts))
+            .await
+            .map_err(js_io)?
+            .dyn_into::<FileSystemFileHandle>()
+            .map_err(js_io)?;
+
+        let handle = JsFuture::from(file.create_sync_access_handle())
+            .await
+            .map_err(js_io)?
+            .dyn_into::<FileSystemSyncAccessHandle>()
+            .map_err(js_io)?;
+
         Ok(Self {
-            handle: SendJsValue(handle),
+            handle: Arc::new(SyncHandle::new(handle)),
         })
     }
 
@@ -89,88 +58,107 @@ impl OpfsCacheOps {
     }
 }
 
-fn cache_file_name(cache_id: u32) -> String {
-    format!("{cache_id:08x}.bin")
-}
-
-#[derive(Clone)]
-struct SendJsValue(JsValue);
-
-unsafe impl Send for SendJsValue {}
-unsafe impl Sync for SendJsValue {}
-
-impl SendJsValue {
-    fn as_js_value(&self) -> &JsValue {
-        &self.0
-    }
-}
-
-struct SendJsFuture(JsFuture);
-
-unsafe impl Send for SendJsFuture {}
-
-impl From<Promise> for SendJsFuture {
-    fn from(promise: Promise) -> Self {
-        Self(JsFuture::from(promise))
-    }
-}
-
-impl Future for SendJsFuture {
-    type Output = Result<JsValue, JsValue>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx)
-    }
-}
-
 #[async_trait]
 impl CacheOps for OpfsCacheOps {
     async fn read_at(&self, offset: u64, out: &mut [u8]) -> GibbloxResult<usize> {
         if out.is_empty() {
             return Ok(0);
         }
-        let offset = to_js_number(offset, "offset")?;
-        let len = to_js_number(out.len() as u64, "length")?;
-        let promise = js_opfs_read_at(self.handle.as_js_value(), offset, len).map_err(js_io)?;
-        let value = SendJsFuture::from(promise).await.map_err(js_io)?;
-        let bytes = Uint8Array::new(&value);
-        let read = bytes.length() as usize;
-        let copy_len = out.len().min(read);
-        bytes
-            .subarray(0, copy_len as u32)
-            .copy_to(&mut out[..copy_len]);
-        Ok(copy_len)
+        let at = to_js_number(offset, "offset")?;
+        let opts = FileSystemReadWriteOptions::new();
+        opts.set_at(at);
+
+        let handle = self.handle.lock()?;
+        let read = handle
+            .read_with_u8_array_and_options(out, &opts)
+            .map_err(js_io)?;
+        f64_to_usize(read, "read size")
     }
 
     async fn write_at(&self, offset: u64, data: &[u8]) -> GibbloxResult<()> {
         if data.is_empty() {
             return Ok(());
         }
-        let offset = to_js_number(offset, "offset")?;
-        let data_len = u32::try_from(data.len()).map_err(|_| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "write payload too large")
-        })?;
-        let promise = {
-            let bytes = Uint8Array::new_with_length(data_len);
-            bytes.copy_from(data);
-            js_opfs_write_at(self.handle.as_js_value(), offset, &bytes).map_err(js_io)?
-        };
-        let _ = SendJsFuture::from(promise).await.map_err(js_io)?;
+        let at = to_js_number(offset, "offset")?;
+        let opts = FileSystemReadWriteOptions::new();
+        opts.set_at(at);
+
+        let handle = self.handle.lock()?;
+        let mut written = 0usize;
+        while written < data.len() {
+            let n = handle
+                .write_with_u8_array_and_options(&data[written..], &opts)
+                .map_err(js_io)?;
+            let n = f64_to_usize(n, "write size")?;
+            if n == 0 {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    "short write to OPFS sync access handle",
+                ));
+            }
+            written += n;
+            let next_offset = offset.checked_add(written as u64).ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "write range overflow")
+            })?;
+            opts.set_at(to_js_number(next_offset, "offset")?);
+        }
+
         Ok(())
     }
 
     async fn set_len(&self, len: u64) -> GibbloxResult<()> {
         let len = to_js_number(len, "length")?;
-        let promise = js_opfs_set_len(self.handle.as_js_value(), len).map_err(js_io)?;
-        let _ = SendJsFuture::from(promise).await.map_err(js_io)?;
-        Ok(())
+        let handle = self.handle.lock()?;
+        handle.truncate_with_f64(len).map_err(js_io)
     }
 
     async fn flush(&self) -> GibbloxResult<()> {
-        let promise = js_opfs_flush(self.handle.as_js_value()).map_err(js_io)?;
-        let _ = SendJsFuture::from(promise).await.map_err(js_io)?;
-        Ok(())
+        let handle = self.handle.lock()?;
+        handle.flush().map_err(js_io)
     }
+}
+
+struct SyncHandle(Mutex<FileSystemSyncAccessHandle>);
+
+unsafe impl Send for SyncHandle {}
+unsafe impl Sync for SyncHandle {}
+
+impl SyncHandle {
+    fn new(handle: FileSystemSyncAccessHandle) -> Self {
+        Self(Mutex::new(handle))
+    }
+
+    fn lock(&self) -> GibbloxResult<std::sync::MutexGuard<'_, FileSystemSyncAccessHandle>> {
+        self.0.lock().map_err(|_| {
+            GibbloxError::with_message(GibbloxErrorKind::Io, "OPFS sync handle lock poisoned")
+        })
+    }
+}
+
+impl Drop for OpfsCacheOps {
+    fn drop(&mut self) {
+        if let Ok(handle) = self.handle.lock() {
+            let _ = handle.flush();
+            handle.close();
+        }
+    }
+}
+
+async fn get_root_directory() -> GibbloxResult<FileSystemDirectoryHandle> {
+    let global = js_sys::global()
+        .dyn_into::<WorkerGlobalScope>()
+        .map_err(|_| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::Unsupported,
+                "OpfsCacheOps requires a web worker global scope",
+            )
+        })?;
+    let storage = global.navigator().storage();
+    JsFuture::from(storage.get_directory())
+        .await
+        .map_err(js_io)?
+        .dyn_into::<FileSystemDirectoryHandle>()
+        .map_err(js_io)
 }
 
 fn to_js_number(value: u64, label: &str) -> GibbloxResult<f64> {
@@ -181,6 +169,16 @@ fn to_js_number(value: u64, label: &str) -> GibbloxResult<f64> {
         ));
     }
     Ok(value as f64)
+}
+
+fn f64_to_usize(value: f64, label: &str) -> GibbloxResult<usize> {
+    if !value.is_finite() || value < 0.0 || value > usize::MAX as f64 {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::OutOfRange,
+            format!("invalid {label} from OPFS API"),
+        ));
+    }
+    Ok(value as usize)
 }
 
 fn js_io(err: JsValue) -> GibbloxError {
