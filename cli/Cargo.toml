@@ -8,5 +8,15 @@ license = { workspace = true }
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.32", features = ["derive"] }
+gibblox-android-sparse = { workspace = true, features = ["std"] }
+gibblox-casync = { workspace = true, features = ["std"] }
+gibblox-casync-std = { workspace = true }
+gibblox-core = { workspace = true, features = ["std"] }
+gibblox-file = { workspace = true }
+gibblox-http = { workspace = true }
+gibblox-mbr = { workspace = true }
 gibblox-pipeline = { workspace = true, features = ["std"] }
+gibblox-xz = { workspace = true, features = ["std"] }
 serde_yaml = "0.9.34"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+url = { workspace = true }

@@ -302,22 +302,45 @@ pub struct PipelineSourceCasync {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineSourceXzSource {
+    #[serde(deserialize_with = "deserialize_nested_pipeline_source")]
     pub xz: Box<PipelineSource>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineSourceAndroidSparseImgSource {
+    #[serde(deserialize_with = "deserialize_nested_pipeline_source")]
     pub android_sparseimg: Box<PipelineSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum NestedPipelineSourceValue {
+    Direct(Box<PipelineSource>),
+    Source { source: Box<PipelineSource> },
+}
+
+fn deserialize_nested_pipeline_source<'de, D>(
+    deserializer: D,
+) -> Result<Box<PipelineSource>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = NestedPipelineSourceValue::deserialize(deserializer)?;
+    Ok(match value {
+        NestedPipelineSourceValue::Direct(source) => source,
+        NestedPipelineSourceValue::Source { source } => source,
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineSourceMbrSource {
+    #[serde(deserialize_with = "deserialize_mbr_source")]
     pub mbr: PipelineSourceMbr,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct PipelineSourceMbr {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partuuid: Option<String>,
@@ -327,13 +350,57 @@ pub struct PipelineSourceMbr {
     pub source: Box<PipelineSource>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PipelineSourceGptSource {
-    pub gpt: PipelineSourceGpt,
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum PipelineSourceMbrValue {
+    Flatten {
+        #[serde(default)]
+        partuuid: Option<String>,
+        #[serde(default)]
+        index: Option<u32>,
+        #[serde(flatten)]
+        source: Box<PipelineSource>,
+    },
+    Source {
+        #[serde(default)]
+        partuuid: Option<String>,
+        #[serde(default)]
+        index: Option<u32>,
+        source: Box<PipelineSource>,
+    },
+}
+
+fn deserialize_mbr_source<'de, D>(deserializer: D) -> Result<PipelineSourceMbr, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = PipelineSourceMbrValue::deserialize(deserializer)?;
+    Ok(match value {
+        PipelineSourceMbrValue::Flatten {
+            partuuid,
+            index,
+            source,
+        }
+        | PipelineSourceMbrValue::Source {
+            partuuid,
+            index,
+            source,
+        } => PipelineSourceMbr {
+            partuuid,
+            index,
+            source,
+        },
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineSourceGptSource {
+    #[serde(deserialize_with = "deserialize_gpt_source")]
+    pub gpt: PipelineSourceGpt,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct PipelineSourceGpt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partlabel: Option<String>,
@@ -343,6 +410,56 @@ pub struct PipelineSourceGpt {
     pub index: Option<u32>,
     #[serde(flatten)]
     pub source: Box<PipelineSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum PipelineSourceGptValue {
+    Flatten {
+        #[serde(default)]
+        partlabel: Option<String>,
+        #[serde(default)]
+        partuuid: Option<String>,
+        #[serde(default)]
+        index: Option<u32>,
+        #[serde(flatten)]
+        source: Box<PipelineSource>,
+    },
+    Source {
+        #[serde(default)]
+        partlabel: Option<String>,
+        #[serde(default)]
+        partuuid: Option<String>,
+        #[serde(default)]
+        index: Option<u32>,
+        source: Box<PipelineSource>,
+    },
+}
+
+fn deserialize_gpt_source<'de, D>(deserializer: D) -> Result<PipelineSourceGpt, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = PipelineSourceGptValue::deserialize(deserializer)?;
+    Ok(match value {
+        PipelineSourceGptValue::Flatten {
+            partlabel,
+            partuuid,
+            index,
+            source,
+        }
+        | PipelineSourceGptValue::Source {
+            partlabel,
+            partuuid,
+            index,
+            source,
+        } => PipelineSourceGpt {
+            partlabel,
+            partuuid,
+            index,
+            source,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -380,6 +497,31 @@ mod tests {
         let encoded = encode_pipeline(&source).expect("encode pipeline");
         let decoded = decode_pipeline(&encoded).expect("decode pipeline");
         assert_eq!(decoded, source);
+    }
+
+    #[test]
+    fn parses_source_style_yaml_pipeline() {
+        let source: PipelineSource = serde_yaml::from_str(
+            r#"
+gpt:
+  partlabel: rootfs
+  source:
+    android_sparseimg:
+      source:
+        xz:
+          source:
+            http: https://cdn.example.invalid/device.img.xz
+"#,
+        )
+        .expect("parse source-style YAML");
+
+        validate_pipeline(&source).expect("source-style pipeline should validate");
+        match source {
+            PipelineSource::Gpt(source) => {
+                assert_eq!(source.gpt.partlabel.as_deref(), Some("rootfs"));
+            }
+            other => panic!("expected gpt source, got {other:?}"),
+        }
     }
 
     #[test]

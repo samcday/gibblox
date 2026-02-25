@@ -676,8 +676,18 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "gibblox-android-sparse",
+ "gibblox-casync",
+ "gibblox-casync-std",
+ "gibblox-core",
+ "gibblox-file",
+ "gibblox-http",
+ "gibblox-mbr",
  "gibblox-pipeline",
+ "gibblox-xz",
  "serde_yaml",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -764,6 +774,7 @@ version = "0.0.0"
 dependencies = [
  "postcard",
  "serde",
+ "serde_yaml",
 ]
 
 [[package]]
