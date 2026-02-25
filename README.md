@@ -85,6 +85,13 @@ Tomorrow:
 - Keep worker responsiveness by chunking/coop-yielding large ext4 operations.
 - Push ext4 support toward a clean `no_std + alloc` profile.
 
+## Pipelines
+Pipelines are the portable descriptor format for composing read-only block sources
+(`http`, `file`, `casync`) with wrappers/selectors (`xz`, `android_sparseimg`, `mbr`, `gpt`).
+
+See [`docs/pipelines.md`](docs/pipelines.md) for YAML examples and `gibblox-cli` usage
+(`pipeline validate`, `pipeline encode`, `pipeline decode`, and direct execution).
+
 ## Usage (native)
 ```rust
 use gibblox_core::{BlockReader, ReadContext};
