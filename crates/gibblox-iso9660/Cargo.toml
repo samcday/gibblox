@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
+description = "Block reader for ISO9660 file contents."
 
 [features]
 default = []

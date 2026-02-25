@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
+description = "Block reader backed by HTTP Range requests."
 
 [features]
 default = ["native-client"]

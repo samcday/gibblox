@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
+description = "casync index/chunk source with CacheStorage-backed chunk store."
 
 [dependencies]
 gibblox-casync = { workspace = true }

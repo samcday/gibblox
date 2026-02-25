@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
+description = "Block reader that exposes XZ streams as random-access blocks."
 
 [features]
 default = []
