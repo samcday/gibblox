@@ -8,6 +8,7 @@ license = { workspace = true }
 [dependencies]
 anyhow = "1.0.100"
 async-trait = { workspace = true }
+erofs-rs = { path = "../../erofs-rs/erofs", default-features = false }
 gobblytes-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

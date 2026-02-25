@@ -12,7 +12,7 @@ pub const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
 #[derive(Clone)]
 pub struct ErofsRootfs {
-    fs: gibblox_core::erofs_rs::EroFS<GibbloxReadAtAdapter>,
+    fs: erofs_rs::EroFS<GibbloxReadAtAdapter>,
 }
 
 impl ErofsRootfs {
@@ -35,7 +35,7 @@ impl ErofsRootfs {
                 image_size_bytes,
             ),
         };
-        let fs = gibblox_core::erofs_rs::EroFS::from_image(adapter, image_size_bytes)
+        let fs = erofs_rs::EroFS::from_image(adapter, image_size_bytes)
             .await
             .map_err(|err| anyhow!("open erofs image: {err}"))?;
         Ok(Self { fs })
@@ -51,10 +51,7 @@ impl ErofsRootfs {
         }
     }
 
-    async fn resolve_inode(
-        &self,
-        path: &str,
-    ) -> Result<Option<gibblox_core::erofs_rs::types::Inode>> {
+    async fn resolve_inode(&self, path: &str) -> Result<Option<erofs_rs::types::Inode>> {
         self.fs
             .get_path_inode_str(path)
             .await
@@ -63,7 +60,7 @@ impl ErofsRootfs {
 
     async fn read_symlink_target(
         &self,
-        inode: &gibblox_core::erofs_rs::types::Inode,
+        inode: &erofs_rs::types::Inode,
         path: &str,
     ) -> Result<String> {
         let mut out = vec![0u8; inode.data_size()];
@@ -215,8 +212,8 @@ struct GibbloxReadAtAdapter {
 }
 
 #[async_trait]
-impl gibblox_core::erofs_rs::ReadAt for GibbloxReadAtAdapter {
-    async fn read_at(&self, offset: u64, buf: &mut [u8]) -> gibblox_core::erofs_rs::Result<usize> {
+impl erofs_rs::ReadAt for GibbloxReadAtAdapter {
+    async fn read_at(&self, offset: u64, buf: &mut [u8]) -> erofs_rs::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -272,16 +269,14 @@ fn parse_dir_block(block: &[u8], out: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-fn map_gibblox_err(err: gibblox_core::GibbloxError) -> gibblox_core::erofs_rs::Error {
+fn map_gibblox_err(err: gibblox_core::GibbloxError) -> erofs_rs::Error {
     match err.kind() {
         GibbloxErrorKind::InvalidInput => {
-            gibblox_core::erofs_rs::Error::CorruptedData(format!("invalid input: {err}"))
+            erofs_rs::Error::CorruptedData(format!("invalid input: {err}"))
         }
-        GibbloxErrorKind::OutOfRange => gibblox_core::erofs_rs::Error::OutOfBounds(err.to_string()),
-        GibbloxErrorKind::Io => gibblox_core::erofs_rs::Error::OutOfBounds(err.to_string()),
-        GibbloxErrorKind::Unsupported => {
-            gibblox_core::erofs_rs::Error::NotSupported(err.to_string())
-        }
-        GibbloxErrorKind::Other => gibblox_core::erofs_rs::Error::OutOfBounds(err.to_string()),
+        GibbloxErrorKind::OutOfRange => erofs_rs::Error::OutOfBounds(err.to_string()),
+        GibbloxErrorKind::Io => erofs_rs::Error::OutOfBounds(err.to_string()),
+        GibbloxErrorKind::Unsupported => erofs_rs::Error::NotSupported(err.to_string()),
+        GibbloxErrorKind::Other => erofs_rs::Error::OutOfBounds(err.to_string()),
     }
 }
