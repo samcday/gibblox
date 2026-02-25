@@ -4,6 +4,8 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
+repository = { workspace = true }
+description = "CLI for reading and composing gibblox block pipelines."
 
 [dependencies]
 anyhow = "1.0.95"
