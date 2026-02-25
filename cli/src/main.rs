@@ -9,7 +9,12 @@ use clap::{Args, Parser, Subcommand};
 use gibblox_pipeline::{PipelineSource, decode_pipeline, encode_pipeline, validate_pipeline};
 
 #[derive(Parser)]
-#[command(author, version, about = "gibblox CLI utilities")]
+#[command(
+    author,
+    version,
+    about = "gibblox CLI utilities",
+    subcommand_precedence_over_arg = true
+)]
 struct Cli {
     /// Input pipeline document path ("-" for stdin).
     #[arg(value_name = "PIPELINE")]
@@ -46,7 +51,7 @@ enum PipelineCommand {
 #[derive(Args)]
 struct PipelineEncodeArgs {
     /// Input YAML file.
-    #[arg(short = 'i', long)]
+    #[arg(value_name = "INPUT")]
     input: std::path::PathBuf,
     /// Output binary file.
     #[arg(short = 'o', long)]
@@ -56,7 +61,7 @@ struct PipelineEncodeArgs {
 #[derive(Args)]
 struct PipelineDecodeArgs {
     /// Input binary file.
-    #[arg(short = 'i', long)]
+    #[arg(value_name = "INPUT")]
     input: std::path::PathBuf,
     /// Output YAML file.
     #[arg(short = 'o', long)]
@@ -66,7 +71,7 @@ struct PipelineDecodeArgs {
 #[derive(Args)]
 struct PipelineValidateArgs {
     /// Input YAML or binary file.
-    #[arg(short = 'i', long)]
+    #[arg(value_name = "INPUT")]
     input: std::path::PathBuf,
     /// Parse input as binary pipeline.
     #[arg(long)]
@@ -219,6 +224,12 @@ mod tests {
         let cli = Cli::parse_from(["gibblox-cli", "pipeline.yaml", "--output", "out.gbxp"]);
         assert_eq!(cli.pipeline.as_deref(), Some("pipeline.yaml"));
         assert_eq!(cli.output.as_deref(), Some("out.gbxp"));
+    }
+
+    #[test]
+    fn parse_validate_with_positional_input() {
+        let cli = Cli::parse_from(["gibblox-cli", "pipeline", "validate", "/tmp/lol"]);
+        assert!(matches!(cli.command, Some(super::Commands::Pipeline(_))));
     }
 
     #[test]
