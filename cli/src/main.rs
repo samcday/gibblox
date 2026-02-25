@@ -318,8 +318,13 @@ async fn open_casync_source(
 
 fn parse_casync_index_locator(index: &str) -> Result<StdCasyncIndexLocator> {
     if let Ok(url) = Url::parse(index) {
-        if matches!(url.scheme(), "http" | "https" | "file") {
+        if matches!(url.scheme(), "http" | "https") {
             return Ok(StdCasyncIndexLocator::url(url));
+        }
+        if url.scheme() == "file" {
+            let path = url_to_local_path(&url)
+                .with_context(|| format!("parse file URL index source {index}"))?;
+            return Ok(StdCasyncIndexLocator::path(path));
         }
     }
 
@@ -352,15 +357,25 @@ fn resolve_casync_chunk_store_locator(
 
 fn parse_casync_chunk_store_locator(value: &str) -> Result<StdCasyncChunkStoreLocator> {
     if let Ok(url) = Url::parse(value) {
-        if matches!(url.scheme(), "http" | "https" | "file") {
+        if matches!(url.scheme(), "http" | "https") {
             return StdCasyncChunkStoreLocator::url_prefix(url)
                 .map_err(|err| anyhow!("configure casync chunk store URL {value}: {err}"));
+        }
+        if url.scheme() == "file" {
+            let path = url_to_local_path(&url)
+                .with_context(|| format!("parse file URL chunk store {value}"))?;
+            return Ok(StdCasyncChunkStoreLocator::path_prefix(path));
         }
     }
 
     Ok(StdCasyncChunkStoreLocator::path_prefix(PathBuf::from(
         value,
     )))
+}
+
+fn url_to_local_path(url: &Url) -> Result<PathBuf> {
+    url.to_file_path()
+        .map_err(|_| anyhow!("URL is not a valid local file path: {url}"))
 }
 
 fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
@@ -514,8 +529,12 @@ fn io_label(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, parse_pipeline_document, validate_binary_output};
+    use super::{
+        Cli, parse_casync_chunk_store_locator, parse_casync_index_locator, parse_pipeline_document,
+        validate_binary_output,
+    };
     use clap::Parser;
+    use gibblox_casync_std::{StdCasyncChunkStoreLocator, StdCasyncIndexLocator};
 
     #[test]
     fn parse_top_level_pipeline_and_output() {
@@ -546,6 +565,32 @@ mod tests {
         )
         .expect("parse source-style pipeline YAML");
         assert!(matches!(source, gibblox_pipeline::PipelineSource::Gpt(_)));
+    }
+
+    #[test]
+    fn parse_file_index_url_as_path_locator() {
+        let locator = parse_casync_index_locator("file:///tmp/indexes/rootfs.caibx")
+            .expect("parse file URL index locator");
+        match locator {
+            StdCasyncIndexLocator::Path(path) => {
+                assert!(path.ends_with("indexes/rootfs.caibx"));
+            }
+            StdCasyncIndexLocator::Url(url) => panic!("expected path locator, got URL {url}"),
+        }
+    }
+
+    #[test]
+    fn parse_file_chunk_store_url_as_path_locator() {
+        let locator = parse_casync_chunk_store_locator("file:///tmp/chunks/")
+            .expect("parse file URL chunk store locator");
+        match locator {
+            StdCasyncChunkStoreLocator::PathPrefix(path) => {
+                assert!(path.ends_with("chunks"));
+            }
+            StdCasyncChunkStoreLocator::UrlPrefix(url) => {
+                panic!("expected path-prefix locator, got URL {url}")
+            }
+        }
     }
 
     #[test]
