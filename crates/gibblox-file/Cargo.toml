@@ -7,5 +7,5 @@ license = { workspace = true }
 
 [dependencies]
 async-trait = { workspace = true }
-gibblox-core = { path = "../gibblox-core", features = ["std"], default-features = false }
+gibblox-core = { workspace = true, features = ["std"] }
 tracing = "0.1.41"

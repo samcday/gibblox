@@ -10,8 +10,8 @@ default = []
 std = []
 
 [dependencies]
-gibblox-core = { path = "../gibblox-core" }
-gobblytes-core = { path = "../gobblytes-core" }
+gibblox-core = { workspace = true }
+gobblytes-core = { workspace = true }
 hadris-fat = { version = "1.0.1", default-features = false, features = ["alloc", "async", "read", "lfn"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 

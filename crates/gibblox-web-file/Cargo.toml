@@ -11,7 +11,7 @@ std = ["gibblox-core/std"]
 
 [dependencies]
 async-trait = "0.1.89"
-gibblox-core = { path = "../gibblox-core", default-features = false }
+gibblox-core = { workspace = true }
 tracing = { version = "0.1.41", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

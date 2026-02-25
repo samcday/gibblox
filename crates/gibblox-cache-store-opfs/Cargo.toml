@@ -8,8 +8,8 @@ license = { workspace = true }
 [dependencies]
 async-trait = { workspace = true }
 futures-channel = "0.3.31"
-gibblox-cache = { path = "../gibblox-cache", default-features = false }
-gibblox-core = { path = "../gibblox-core", default-features = false }
+gibblox-cache = { workspace = true }
+gibblox-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = { workspace = true }

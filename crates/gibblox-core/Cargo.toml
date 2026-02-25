@@ -18,9 +18,9 @@ tracing = { version = "0.1.41", default-features = false, features = ["attribute
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor"] }
-gibblox-cache = { path = "../gibblox-cache" }
-gibblox-cache-store-std = { path = "../gibblox-cache-store-std" }
-gibblox-file = { path = "../gibblox-file" }
+gibblox-cache = { workspace = true, features = ["std"] }
+gibblox-cache-store-std = { workspace = true }
+gibblox-file = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 

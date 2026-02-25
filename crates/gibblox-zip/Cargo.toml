@@ -11,7 +11,7 @@ std = []
 
 [dependencies]
 async-trait = { workspace = true }
-gibblox-core = { path = "../gibblox-core" }
+gibblox-core = { workspace = true }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 
 [dev-dependencies]

@@ -12,7 +12,7 @@ std = []
 [dependencies]
 async-trait = "0.1.89"
 bytemuck = { version = "1.24.0", default-features = false }
-gibblox-core = { path = "../gibblox-core" }
+gibblox-core = { workspace = true }
 hadris-part = { version = "1.0.1", default-features = false }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 
