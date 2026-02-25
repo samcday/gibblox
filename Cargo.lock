@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cli"
-version = "0.0.0"
+version = "0.0.1-rc.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-pipeline"
-version = "0.0.0"
+version = "0.0.1-rc.2"
 dependencies = [
  "postcard",
  "serde",
