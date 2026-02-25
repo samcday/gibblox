@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
+description = "EROFS filesystem adapter for gibblox block readers."
 
 [dependencies]
 anyhow = "1.0.100"
