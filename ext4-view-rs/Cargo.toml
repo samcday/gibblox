@@ -14,7 +14,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/nicholasbishop/ext4-view-rs"
 categories = ["filesystem", "embedded", "no-std"]
 description = "No-std compatible Rust library for reading ext2/ext3/ext4 filesystems"
-keywords = ["ext4", "ext2", "ext3", "filesystem", "no_std"]
+keywords = ["ext4", "ext3", "filesystem", "no_std", "gibblox"]
 rust-version = "1.85"
 include = [
     "src/*.rs",

@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "MessagePort transport bridge for BlockReader RPC."
+keywords = ["gibblox"]
 
 [dependencies]
 async-trait = { workspace = true }

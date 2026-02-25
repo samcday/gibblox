@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "casync index/chunk source with integrated chunk cache store."
+keywords = ["gibblox"]
 
 [dependencies]
 async-trait = { workspace = true }

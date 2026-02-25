@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Block reader cache layer and cache file format."
+keywords = ["gibblox"]
 
 [features]
 default = ["std"]

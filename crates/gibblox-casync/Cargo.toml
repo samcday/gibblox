@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "casync index parsing and reconstruction core."
+keywords = ["gibblox"]
 
 [features]
 default = []

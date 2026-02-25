@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Worker helpers for serving BlockReader over MessagePort."
+keywords = ["gibblox"]
 
 [dependencies]
 gibblox-core = { workspace = true }

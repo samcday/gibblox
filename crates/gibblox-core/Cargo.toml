@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Core block reader traits, error types, and composition utilities."
+keywords = ["gibblox"]
 
 [features]
 default = []

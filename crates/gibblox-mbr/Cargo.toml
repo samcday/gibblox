@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Block reader for MBR partitions."
+keywords = ["gibblox"]
 
 [features]
 default = []

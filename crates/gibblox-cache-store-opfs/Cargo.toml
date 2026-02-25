@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "OPFS-backed cache store for web runtimes."
+keywords = ["gibblox"]
 
 [dependencies]
 async-trait = { workspace = true }

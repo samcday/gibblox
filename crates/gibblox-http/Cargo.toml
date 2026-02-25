@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Block reader backed by HTTP Range requests."
+keywords = ["gibblox"]
 
 [features]
 default = ["native-client"]

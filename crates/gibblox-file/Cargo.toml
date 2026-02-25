@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Block reader backed by local files."
+keywords = ["gibblox"]
 
 [dependencies]
 async-trait = { workspace = true }
