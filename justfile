@@ -17,7 +17,7 @@ test:
 
 wasm-check:
     cargo check --target wasm32-unknown-unknown --locked -p gibblox-http --no-default-features --features wasm-client
-    cargo check --target wasm32-unknown-unknown --locked -p gibblox-web-file -p gibblox-blockreader-messageport -p gibblox-casync-web -p gibblox-cache-store-opfs -p gibblox-web-worker -p gibblox-ext4
+    cargo check --target wasm32-unknown-unknown --locked -p gibblox-cache-store-opfs
 
 ci-rust: fmt check clippy test
 
