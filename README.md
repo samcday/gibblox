@@ -89,8 +89,10 @@ Tomorrow:
 Pipelines are the portable descriptor format for composing read-only block sources
 (`http`, `file`, `casync`) with wrappers/selectors (`xz`, `android_sparseimg`, `mbr`, `gpt`).
 
-See [`docs/pipelines.md`](docs/pipelines.md) for YAML examples and `gibblox-cli` usage
-(`pipeline validate`, `pipeline encode`, `pipeline decode`, and direct execution).
+See [`docs/pipelines.md`](docs/pipelines.md) for YAML examples, selector validation rules, and
+`gibblox-cli` usage (`pipeline validate` for YAML, `pipeline validate --binary` for encoded
+`.gbxp` descriptors, plus `pipeline encode`, `pipeline decode`, and direct execution with
+automatic YAML or `.gbxp` input detection).
 
 ## Usage (native)
 ```rust

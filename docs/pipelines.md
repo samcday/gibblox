@@ -9,7 +9,8 @@ At a high level:
 - Wrappers transform another source (`xz`, `android_sparseimg`).
 - Selectors pick a partition from a container (`mbr`, `gpt`).
 
-Pipelines are expressed as YAML for authoring and as a compact binary format for transport.
+Pipelines are expressed as YAML for authoring and as a compact binary format (`.gbxp`) for
+transport.
 
 ## YAML shape
 
@@ -46,6 +47,14 @@ gpt:
   file: ./artifacts/disk.img
 ```
 
+### Local file in MBR partition index 1
+
+```yaml
+mbr:
+  index: 1
+  file: ./artifacts/disk.img
+```
+
 ### casync image with separate chunk store
 
 ```yaml
@@ -63,6 +72,13 @@ casync:
 
 When `chunk_store` is omitted, the CLI derives it from the index location.
 
+## Validation rules
+
+- `mbr` must specify exactly one selector: `partuuid` or `index`.
+- `gpt` must specify exactly one selector: `partlabel`, `partuuid`, or `index`.
+- `casync.index` must not be empty and must reference a casync blob index (`.caibx`); archive
+  indexes (`.caidx`) are rejected.
+
 ## CLI usage
 
 The `gibblox-cli` has a `pipeline` command group for working with pipeline definitions.
@@ -71,6 +87,12 @@ The `gibblox-cli` has a `pipeline` command group for working with pipeline defin
 
 ```bash
 cargo run -p gibblox-cli -- pipeline validate pipeline.yaml
+```
+
+### Validate a binary pipeline
+
+```bash
+cargo run -p gibblox-cli -- pipeline validate pipeline.gbxp --binary
 ```
 
 ### Encode YAML to binary (`.gbxp`)
@@ -85,22 +107,21 @@ cargo run -p gibblox-cli -- pipeline encode pipeline.yaml -o pipeline.gbxp
 cargo run -p gibblox-cli -- pipeline decode pipeline.gbxp -o pipeline.yaml
 ```
 
-### Validate a binary pipeline
-
-```bash
-cargo run -p gibblox-cli -- pipeline validate pipeline.gbxp --binary
-```
 
 ### Resolve and stream a pipeline
 
 With no subcommand, `gibblox-cli` treats the input as a pipeline (YAML or binary), validates it,
-opens it, and streams the resolved bytes to output:
+opens it, and streams the resolved bytes to output. Binary input is detected automatically from
+the pipeline header.
 
 ```bash
 # to stdout
+cargo run -p gibblox-cli -- pipeline.yaml
+
+# to file via shell redirection
 cargo run -p gibblox-cli -- pipeline.yaml > image.bin
 
-# to file
+# to file via --output
 cargo run -p gibblox-cli -- pipeline.yaml --output image.bin
 ```
 
@@ -109,4 +130,4 @@ cargo run -p gibblox-cli -- pipeline.yaml --output image.bin
 - Pipelines are strictly read-only.
 - Validation is deterministic and rejects malformed selector combinations.
 - Encode/decode/validate commands do not perform network I/O; they only parse and validate
-  descriptors.
+  descriptors (`validate` checks YAML by default, and `validate --binary` checks encoded pipelines).
