@@ -1,5 +1,5 @@
 [package]
-name = "erofs-rs"
+name = "gobblytes-erofs-rs"
 version = "0.1.1"
 edition = "2024"
 authors = ["Dreamacro"]
