@@ -4,6 +4,7 @@ default:
     @just --list
 
 # Bump workspace version (supports semver and semver-rc.N)
+# Also updates workspace crate versions in [workspace.dependencies].
 bump version:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -20,21 +21,107 @@ bump version:
         exit 1
     fi
 
-    current="$(sed -nE '/^\[workspace\.package\]/,/^\[/{s/^version = "(.*)"$/\1/p}' Cargo.toml)"
-    if [[ -z "$current" ]]; then
-        echo "workspace.package version line not found in Cargo.toml"
-        exit 1
-    fi
+    before="$(cksum Cargo.toml)"
 
-    if [[ "$current" == "$version" ]]; then
-        echo "Workspace version already set to $version"
+    python - "$version" <<'PY'
+    import re
+    import sys
+    from pathlib import Path
+    import tomllib
+
+    target = sys.argv[1]
+    root = Path("Cargo.toml")
+    text = root.read_text(encoding="utf-8")
+    doc = tomllib.loads(text)
+
+    workspace = doc.get("workspace")
+    if not isinstance(workspace, dict):
+        raise SystemExit("workspace table not found in Cargo.toml")
+
+    members = workspace.get("members")
+    if not isinstance(members, list):
+        raise SystemExit("workspace.members not found in Cargo.toml")
+
+    member_names = set()
+    for member in members:
+        manifest = Path(member) / "Cargo.toml"
+        if not manifest.exists():
+            continue
+        member_doc = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        package = member_doc.get("package")
+        if isinstance(package, dict):
+            name = package.get("name")
+            if isinstance(name, str):
+                member_names.add(name)
+
+    new_text, package_updates = re.subn(
+        r'(?ms)(^\[workspace\.package\]\n(?:.*\n)*?^version\s*=\s*")[^"]*(")',
+        lambda m: f"{m.group(1)}{target}{m.group(2)}",
+        text,
+        count=1,
+    )
+    if package_updates != 1:
+        raise SystemExit("workspace.package version line not found in Cargo.toml")
+
+    lines = new_text.splitlines()
+    in_workspace_deps = False
+    seen = set()
+
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_workspace_deps = stripped == "[workspace.dependencies]"
+            continue
+        if not in_workspace_deps:
+            continue
+
+        key_match = re.match(r"^([A-Za-z0-9_.-]+)\s*=\s*\{", stripped)
+        if key_match is None:
+            continue
+
+        dep_name = key_match.group(1)
+        if dep_name not in member_names:
+            continue
+
+        seen.add(dep_name)
+        if re.search(r'\bversion\s*=\s*"[^"]*"', line):
+            lines[idx] = re.sub(
+                r'(\bversion\s*=\s*")[^"]*(")',
+                lambda m: f"{m.group(1)}{target}{m.group(2)}",
+                line,
+                count=1,
+            )
+        else:
+            lines[idx] = re.sub(
+                r"\{",
+                '{ version = "' + target + '", ',
+                line,
+                count=1,
+            )
+
+    missing = sorted(member_names - seen)
+    if missing:
+        raise SystemExit(
+            "Missing workspace.dependencies entries for workspace members: "
+            + ", ".join(missing)
+        )
+
+    result = "\n".join(lines)
+    if new_text.endswith("\n"):
+        result += "\n"
+
+    if result != text:
+        root.write_text(result, encoding="utf-8")
+    PY
+
+    after="$(cksum Cargo.toml)"
+    if [[ "$before" == "$after" ]]; then
+        echo "Workspace version and workspace crate dependency versions already set to $version"
         exit 0
     fi
 
-    sed -i -E "/^\[workspace\.package\]/,/^\[/{s/^version = \".*\"$/version = \"$version\"/;}" Cargo.toml
-
     cargo generate-lockfile
-    echo "Bumped workspace version to $version"
+    echo "Bumped workspace version and workspace crate dependency versions to $version"
 
 publish-dry-run:
     cargo publish --workspace --locked --dry-run
