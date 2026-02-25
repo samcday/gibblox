@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Filesystem traits, OSTree path wrapper, and shared test helpers."
+keywords = ["gibblox"]
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor"] }

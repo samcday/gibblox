@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "Filesystem-backed cache store with XDG-friendly defaults."
+keywords = ["gibblox"]
 
 [dependencies]
 async-trait = { workspace = true }

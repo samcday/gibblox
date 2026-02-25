@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 description = "ext4 filesystem adapter and ext4 file-backed block reader."
+keywords = ["gibblox"]
 
 [dependencies]
 async-trait = "0.1.89"
