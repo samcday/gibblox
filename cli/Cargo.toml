@@ -1,0 +1,12 @@
+[package]
+name = "gibblox-cli"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+anyhow = "1.0.95"
+clap = { version = "4.5.32", features = ["derive"] }
+gibblox-pipeline = { workspace = true, features = ["std"] }
+serde_yaml = "0.9.34"
