@@ -40,9 +40,11 @@ To gibblox you will always be just another block.
 - `gibblox-ext4`: ext4 filesystem adapter and ext4 file-backed block reader.
 - `gibblox-http`: HTTP Range-backed block reader (native + wasm).
 - `gibblox-web-file`: browser `File`-backed block reader for wasm targets.
+- `gibblox-pipeline`: product-agnostic source pipeline descriptor + validation + binary framing.
 - `gibblox-cache`: cache layer and cache file format logic.
 - `gibblox-cache-store-std`: XDG-friendly filesystem cache backend for native CLI/desktop apps.
 - `gibblox-cache-store-opfs`: OPFS cache backend for wasm web apps.
+- `gibblox-cli`: CLI utility for pipeline YAML/binary conversion and validation.
 
 ## ext4: today vs tomorrow
 
