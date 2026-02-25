@@ -542,13 +542,14 @@ mod tests {
             data: disk,
         };
 
-        let err = block_on(MbrBlockReader::new(
+        let err = match block_on(MbrBlockReader::new(
             reader,
             MbrPartitionSelector::part_uuid("00000000-01"),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("missing uuid should fail");
+        )) {
+            Ok(_) => panic!("missing uuid should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -560,13 +561,14 @@ mod tests {
             data: disk,
         };
 
-        let err = block_on(MbrBlockReader::new(
+        let err = match block_on(MbrBlockReader::new(
             reader,
             MbrPartitionSelector::index(2),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("extended partition should be unsupported");
+        )) {
+            Ok(_) => panic!("extended partition should be unsupported"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::Unsupported);
     }
 
@@ -581,13 +583,14 @@ mod tests {
             data: disk,
         };
 
-        let err = block_on(MbrBlockReader::new(
+        let err = match block_on(MbrBlockReader::new(
             reader,
             MbrPartitionSelector::index(2),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("linux extended partition should be unsupported");
+        )) {
+            Ok(_) => panic!("linux extended partition should be unsupported"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::Unsupported);
     }
 

@@ -223,7 +223,10 @@ mod tests {
     }
 
     fn write_u32be(bytes: &mut [u8], offset: usize, value: u32) {
-        bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        let end = offset
+            .checked_add(4)
+            .expect("superblock test write offset overflow");
+        bytes[offset..end].copy_from_slice(&value.to_be_bytes());
     }
 
     fn create_test_superblock() -> Vec<u8> {

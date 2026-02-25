@@ -535,9 +535,10 @@ mod tests {
             block_size: 512,
             data: iso,
         };
-        let err = block_on(IsoFileBlockReader::new(reader, "/LiveOS/missing.img", 512))
-            .err()
-            .expect("missing path should fail");
+        let err = match block_on(IsoFileBlockReader::new(reader, "/LiveOS/missing.img", 512)) {
+            Ok(_) => panic!("missing path should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -548,9 +549,10 @@ mod tests {
             block_size: 512,
             data: iso,
         };
-        let err = block_on(IsoFileBlockReader::new(reader, "/LiveOS", 512))
-            .err()
-            .expect("directory path should fail");
+        let err = match block_on(IsoFileBlockReader::new(reader, "/LiveOS", 512)) {
+            Ok(_) => panic!("directory path should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 

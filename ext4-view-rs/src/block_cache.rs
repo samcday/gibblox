@@ -299,7 +299,12 @@ mod tests {
 
     /// Convert block size in bytes to a `BlockSize`.
     fn get_block_size(sz: u32) -> BlockSize {
-        let bs = BlockSize::from_superblock_value(sz.ilog2() - 10).unwrap();
+        let bs = BlockSize::from_superblock_value(
+            sz.ilog2()
+                .checked_sub(10)
+                .expect("test block size exponent underflow"),
+        )
+        .unwrap();
         assert_eq!(bs.to_u32(), sz);
         bs
     }

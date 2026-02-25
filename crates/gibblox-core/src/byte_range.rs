@@ -250,8 +250,7 @@ mod tests {
 
         let mut out = vec![0u8; 32];
         let err = block_on(reader.read_exact_at(4090, &mut out, ReadContext::FOREGROUND))
-            .err()
-            .expect("out-of-bounds read should fail");
+            .expect_err("out-of-bounds read should fail");
         assert_eq!(err.kind(), GibbloxErrorKind::OutOfRange);
     }
 
@@ -266,8 +265,7 @@ mod tests {
 
         let mut out = vec![0u8; 16];
         let err = block_on(reader.read_exact_at(0, &mut out, ReadContext::FOREGROUND))
-            .err()
-            .expect("zero block size should fail");
+            .expect_err("zero block size should fail");
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 

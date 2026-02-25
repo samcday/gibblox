@@ -1019,13 +1019,14 @@ mod tests {
             data: disk,
         };
 
-        let err = block_on(GptBlockReader::new(
+        let err = match block_on(GptBlockReader::new(
             reader,
             GptPartitionSelector::part_uuid("00000000-0000-0000-0000-000000000000"),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("missing uuid should fail");
+        )) {
+            Ok(_) => panic!("missing uuid should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -1040,13 +1041,14 @@ mod tests {
             data: disk,
         };
 
-        let err = block_on(GptBlockReader::new(
+        let err = match block_on(GptBlockReader::new(
             reader,
             GptPartitionSelector::index(0),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("invalid header should fail");
+        )) {
+            Ok(_) => panic!("invalid header should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -1061,13 +1063,14 @@ mod tests {
             data: disk,
         };
 
-        let err = block_on(GptBlockReader::new(
+        let err = match block_on(GptBlockReader::new(
             reader,
             GptPartitionSelector::index(0),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("invalid header crc should fail");
+        )) {
+            Ok(_) => panic!("invalid header crc should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -1082,13 +1085,14 @@ mod tests {
             data: disk,
         };
 
-        let err = block_on(GptBlockReader::new(
+        let err = match block_on(GptBlockReader::new(
             reader,
             GptPartitionSelector::index(0),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("invalid partition table crc should fail");
+        )) {
+            Ok(_) => panic!("invalid partition table crc should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -1103,13 +1107,14 @@ mod tests {
             overreport_bytes: 1,
         };
 
-        let err = block_on(GptBlockReader::new(
+        let err = match block_on(GptBlockReader::new(
             reader,
             GptPartitionSelector::index(0),
             TEST_BLOCK_SIZE as u32,
-        ))
-        .err()
-        .expect("over-reported source read should fail");
+        )) {
+            Ok(_) => panic!("over-reported source read should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::Io);
     }
 

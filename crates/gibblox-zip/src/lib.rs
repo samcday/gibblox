@@ -272,9 +272,10 @@ mod tests {
         let archive = build_stored_zip("rootfs.ero", b"hello", 0, 0);
         let reader = fake_reader(32, archive);
 
-        let err = block_on(ZipEntryBlockReader::new("missing.ero", reader))
-            .err()
-            .expect("missing entry should fail");
+        let err = match block_on(ZipEntryBlockReader::new("missing.ero", reader)) {
+            Ok(_) => panic!("missing entry should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -283,9 +284,10 @@ mod tests {
         let archive = build_stored_zip("rootfs.ero", b"hello", 12, 0);
         let reader = fake_reader(32, archive);
 
-        let err = block_on(ZipEntryBlockReader::new("rootfs.ero", reader))
-            .err()
-            .expect("unsupported method should fail");
+        let err = match block_on(ZipEntryBlockReader::new("rootfs.ero", reader)) {
+            Ok(_) => panic!("unsupported method should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::Unsupported);
     }
 

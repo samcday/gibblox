@@ -838,9 +838,10 @@ mod tests {
             block_size: 8,
             data: image,
         };
-        let err = block_on(AndroidSparseBlockReader::new(source))
-            .err()
-            .expect("construction should fail");
+        let err = match block_on(AndroidSparseBlockReader::new(source)) {
+            Ok(_) => panic!("construction should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -853,9 +854,10 @@ mod tests {
             block_size: 8,
             data: image,
         };
-        let err = block_on(AndroidSparseBlockReader::new(source))
-            .err()
-            .expect("construction should fail");
+        let err = match block_on(AndroidSparseBlockReader::new(source)) {
+            Ok(_) => panic!("construction should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -867,9 +869,10 @@ mod tests {
             block_size: 8,
             data: image,
         };
-        let err = block_on(AndroidSparseBlockReader::new(source))
-            .err()
-            .expect("construction should fail");
+        let err = match block_on(AndroidSparseBlockReader::new(source)) {
+            Ok(_) => panic!("construction should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -887,8 +890,7 @@ mod tests {
 
         let mut out = vec![0u8; 8];
         let err = block_on(reader.read_blocks(2, &mut out, ReadContext::FOREGROUND))
-            .err()
-            .expect("out-of-range read should fail");
+            .expect_err("out-of-range read should fail");
         assert_eq!(err.kind(), GibbloxErrorKind::OutOfRange);
     }
 
