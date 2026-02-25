@@ -12,8 +12,6 @@ use gibblox_core::{
 };
 use tracing::{debug, trace};
 
-pub mod greedy;
-
 const CACHE_MAGIC: [u8; 7] = *b"GIBBLX!";
 const CACHE_VERSION: u8 = 2;
 const CACHE_PREFIX_LEN: usize = 28;
@@ -479,9 +477,8 @@ where
 
     /// Ensure blocks [lba, lba+blocks) are cached without copying data out.
     ///
-    /// This is an internal API for use by GreedyCachedBlockReader. It fetches
-    /// any missing blocks from the inner reader and populates the cache, but
-    /// does not allocate or return a caller buffer.
+    /// This fetches any missing blocks from the inner reader and populates the
+    /// cache without allocating or returning a caller buffer.
     ///
     /// Already-cached blocks are skipped (bitmap check only). The provided
     /// ReadContext propagates priority hints to the inner reader.
