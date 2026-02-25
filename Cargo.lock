@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-android-sparse"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-blockreader-messageport"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache-store-opfs"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache-store-std"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "gibblox-cache",
@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync-std"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "flate2",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync-web"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "flate2",
@@ -555,15 +555,12 @@ dependencies = [
 
 [[package]]
 name = "gibblox-core"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-lock",
  "async-trait",
  "futures",
  "futures-channel",
- "gibblox-cache",
- "gibblox-cache-store-std",
- "gibblox-file",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -571,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-ext4"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -582,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-file"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -591,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-http"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -614,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-iso9660"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -624,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-mbr"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "bytemuck",
@@ -636,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-web-file"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -649,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-web-worker"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -665,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-xz"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -678,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-zip"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -700,14 +697,14 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-core"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "futures",
 ]
 
 [[package]]
 name = "gobblytes-erofs"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -740,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-fat"
-version = "0.0.0"
+version = "0.0.1-rc.1"
 dependencies = [
  "async-trait",
  "futures",
