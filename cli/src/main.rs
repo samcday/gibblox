@@ -1,14 +1,24 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{IsTerminal, Read, Write},
+    path::Path,
+};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use gibblox_pipeline::{PipelineSource, decode_pipeline, encode_pipeline, validate_pipeline};
 
 #[derive(Parser)]
 #[command(author, version, about = "gibblox CLI utilities")]
 struct Cli {
+    /// Input pipeline document path ("-" for stdin).
+    #[arg(value_name = "PIPELINE")]
+    pipeline: Option<String>,
+    /// Output compiled pipeline path ("-" for stdout).
+    #[arg(short, long, value_name = "OUTPUT", requires = "pipeline")]
+    output: Option<String>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -66,9 +76,38 @@ struct PipelineValidateArgs {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Pipeline(args) => run_pipeline(args.command),
+    if cli.command.is_some() {
+        if cli.pipeline.is_some() || cli.output.is_some() {
+            bail!("PIPELINE and --output cannot be used with subcommands");
+        }
     }
+
+    match cli.command {
+        Some(Commands::Pipeline(args)) => run_pipeline(args.command),
+        None => {
+            let input = cli
+                .pipeline
+                .ok_or_else(|| anyhow!("missing required PIPELINE input"))?;
+            let output = cli.output.as_deref().unwrap_or("-");
+            run_default_pipeline_encode(&input, output)
+        }
+    }
+}
+
+fn run_default_pipeline_encode(input_path: &str, output_path: &str) -> Result<()> {
+    let input = read_input_bytes(input_path)?;
+    let source: PipelineSource = serde_yaml::from_slice(&input)
+        .with_context(|| format!("parse pipeline YAML input {}", io_label(input_path)))?;
+    validate_pipeline(&source)
+        .with_context(|| format!("validate pipeline from YAML input {}", io_label(input_path)))?;
+
+    let bytes = encode_pipeline(&source).context("encode pipeline binary")?;
+    validate_binary_output(
+        output_path,
+        "gibblox pipeline",
+        std::io::stdout().is_terminal(),
+    )?;
+    write_output_bytes(output_path, &bytes)
 }
 
 fn run_pipeline(command: PipelineCommand) -> Result<()> {
@@ -126,4 +165,75 @@ fn read_pipeline_yaml(path: &Path) -> Result<PipelineSource> {
         .with_context(|| format!("read pipeline YAML input {}", path.display()))?;
     serde_yaml::from_str(&input)
         .with_context(|| format!("parse pipeline YAML input {}", path.display()))
+}
+
+fn read_input_bytes(path: &str) -> Result<Vec<u8>> {
+    if path == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("reading input from stdin")?;
+        return Ok(buf);
+    }
+
+    fs::read(path).with_context(|| format!("read {}", io_label(path)))
+}
+
+fn validate_binary_output(path: &str, command: &str, stdout_is_tty: bool) -> Result<()> {
+    if path == "-" && stdout_is_tty {
+        bail!(
+            "{command} output is binary and terminal output is disabled by default; use --output <FILE>"
+        );
+    }
+    Ok(())
+}
+
+fn write_output_bytes(path: &str, bytes: &[u8]) -> Result<()> {
+    if path == "-" {
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(bytes)
+            .context("writing output to stdout")?;
+        stdout.flush().context("flushing stdout")?;
+        return Ok(());
+    }
+
+    fs::write(path, bytes).with_context(|| format!("write {}", io_label(path)))
+}
+
+fn io_label(path: &str) -> String {
+    if path == "-" {
+        "stdin/stdout".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, validate_binary_output};
+    use clap::Parser;
+
+    #[test]
+    fn parse_top_level_pipeline_and_output() {
+        let cli = Cli::parse_from(["gibblox-cli", "pipeline.yaml", "--output", "out.gbxp"]);
+        assert_eq!(cli.pipeline.as_deref(), Some("pipeline.yaml"));
+        assert_eq!(cli.output.as_deref(), Some("out.gbxp"));
+    }
+
+    #[test]
+    fn rejects_binary_stdout_for_tty() {
+        let err = validate_binary_output("-", "gibblox pipeline", true)
+            .expect_err("tty stdout should be rejected for binary output");
+        let msg = format!("{err}");
+        assert!(msg.contains("terminal output is disabled by default"));
+    }
+
+    #[test]
+    fn allows_binary_stdout_for_non_tty() {
+        assert!(
+            validate_binary_output("-", "gibblox pipeline", false).is_ok(),
+            "non-tty stdout should be allowed"
+        );
+    }
 }
