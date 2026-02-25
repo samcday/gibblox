@@ -59,6 +59,7 @@ gibblox-cache-store-std = { version = "0.0.1-rc.3", path = "crates/gibblox-cache
 gibblox-cache-store-opfs = { version = "0.0.1-rc.3", path = "crates/gibblox-cache-store-opfs" }
 gibblox-blockreader-messageport = { version = "0.0.1-rc.3", path = "crates/gibblox-blockreader-messageport" }
 gibblox-web-worker = { version = "0.0.1-rc.3", path = "crates/gibblox-web-worker" }
+gibblox-pipeline = { version = "0.0.1-rc.3", path = "crates/gibblox-pipeline" }
 async-trait = "0.1.89"
 bitflags = "2"
 bytes = { version = "1", default-features = false }
