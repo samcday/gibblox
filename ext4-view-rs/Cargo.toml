@@ -24,6 +24,9 @@ include = [
     "LICENSE-MIT",
 ]
 
+[lib]
+name = "ext4_view"
+
 [features]
 std = []
 async = ["std", "dep:async-trait", "dep:pollster"]
