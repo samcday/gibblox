@@ -322,7 +322,7 @@ publish:
     PY
     )
 
-    retry_delays=(0 60 300)
+    retry_delays=(0 60 900 1800)
 
     is_already_published() {
         local package_name="$1"
