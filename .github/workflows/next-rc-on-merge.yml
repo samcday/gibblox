@@ -3,8 +3,6 @@ name: Release follow-ups
 on:
   pull_request:
     types: [closed]
-  release:
-    types: [published]
 
 permissions:
   contents: write
@@ -12,7 +10,7 @@ permissions:
 
 jobs:
   tag-release-pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release/v')
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release/v')
     runs-on: ubuntu-latest
     steps:
       - name: Parse tag from release branch
@@ -58,17 +56,19 @@ jobs:
             -f sha="$MERGE_SHA" >/dev/null
 
   next-rc:
-    if: github.event_name == 'release'
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Parse rc version from published tag
+      - name: Parse next rc version from merged release branch
         id: parse
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
 
-          if [[ "$TAG" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
+          version="${HEAD_REF#release/v}"
+
+          if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
             base="${BASH_REMATCH[1]}"
             rc="${BASH_REMATCH[2]}"
             next_rc=$((rc + 1))
