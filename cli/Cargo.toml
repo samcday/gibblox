@@ -7,6 +7,15 @@ license = { workspace = true }
 repository = { workspace = true }
 description = "CLI for reading and composing gibblox block pipelines."
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }.zip"
+pkg-fmt = "zip"
+
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.32", features = ["derive"] }
