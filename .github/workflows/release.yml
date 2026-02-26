@@ -119,7 +119,7 @@ jobs:
           target: ${{ matrix.target }}
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: gibblox-cli
+          bin: gibblox
           target: ${{ matrix.target }}
           tar: unix
           zip: windows
