@@ -169,6 +169,47 @@ pub fn block_identity_string<R: BlockReader + ?Sized>(reader: &R) -> String {
     value
 }
 
+pub trait BlockReaderConfigIdentity {
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result;
+}
+
+impl<T> BlockReaderConfigIdentity for Arc<T>
+where
+    T: BlockReaderConfigIdentity + ?Sized,
+{
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        (**self).write_identity(out)
+    }
+}
+
+impl<T> BlockReaderConfigIdentity for &T
+where
+    T: BlockReaderConfigIdentity + ?Sized,
+{
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        (**self).write_identity(out)
+    }
+}
+
+pub fn config_identity_string<C: BlockReaderConfigIdentity + ?Sized>(config: &C) -> String {
+    let mut value = String::new();
+    let _ = config.write_identity(&mut value);
+    value
+}
+
+pub fn derive_config_identity_id_with<H: Hasher, C: BlockReaderConfigIdentity + ?Sized>(
+    mut hasher: H,
+    config: &C,
+) -> u32 {
+    let mut writer = HasherFmtWriter::new(&mut hasher);
+    let _ = config.write_identity(&mut writer);
+    finalize_identity_id(hasher.finish() as u32)
+}
+
+pub fn derive_config_identity_id<C: BlockReaderConfigIdentity + ?Sized>(config: &C) -> u32 {
+    derive_config_identity_id_with(BlockIdentityHasher32::new(), config)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ReadPriority {
     #[default]

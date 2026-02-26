@@ -12,6 +12,7 @@ default = []
 std = ["serde/std"]
 
 [dependencies]
+gibblox-core = { workspace = true }
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 serde = { version = "1.0.217", default-features = false, features = ["derive", "alloc"] }
 
