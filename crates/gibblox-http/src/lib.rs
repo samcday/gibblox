@@ -222,7 +222,7 @@ impl HttpClient {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            return Ok(HttpClient::Wasm(wasm::Client::new()?));
+            Ok(HttpClient::Wasm(wasm::Client::new()?))
         }
     }
 
