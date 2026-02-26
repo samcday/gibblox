@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use bytemuck::try_from_bytes;
 use core::fmt;
 use gibblox_core::{
-    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+    BlockReader, BlockReaderConfigIdentity, ByteRangeReader, GibbloxError, GibbloxErrorKind,
+    GibbloxResult, ReadContext,
 };
 use hadris_part::mbr::MasterBootRecord;
 use tracing::{info, trace};
@@ -56,6 +57,54 @@ impl fmt::Display for MbrPartitionSelector {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MbrBlockReaderConfig {
+    pub selector: MbrPartitionSelector,
+    pub block_size: u32,
+    pub source_identity: Option<String>,
+}
+
+impl MbrBlockReaderConfig {
+    pub fn new(selector: MbrPartitionSelector, block_size: u32) -> Self {
+        Self {
+            selector,
+            block_size,
+            source_identity: None,
+        }
+    }
+
+    pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
+        self.source_identity = Some(source_identity.into());
+        self
+    }
+
+    fn validate(&self) -> GibbloxResult<()> {
+        if self.block_size == 0 || !self.block_size.is_power_of_two() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero power of two",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl BlockReaderConfigIdentity for MbrBlockReaderConfig {
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        out.write_str("mbr-partition:(")?;
+        out.write_str(
+            self.source_identity
+                .as_deref()
+                .unwrap_or("<unknown-source>"),
+        )?;
+        write!(
+            out,
+            "):selector={}:block_size={}",
+            self.selector, self.block_size
+        )
+    }
+}
+
 pub struct MbrBlockReader {
     block_size: u32,
     partition_size_bytes: u64,
@@ -63,7 +112,7 @@ pub struct MbrBlockReader {
     partition_partuuid: String,
     byte_reader: ByteRangeReader,
     partition_offset_bytes: u64,
-    identity: String,
+    config: MbrBlockReaderConfig,
 }
 
 impl MbrBlockReader {
@@ -72,13 +121,15 @@ impl MbrBlockReader {
         selector: MbrPartitionSelector,
         block_size: u32,
     ) -> GibbloxResult<Self> {
-        info!(%selector, block_size, "constructing MBR-backed reader");
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
+        Self::open_with_config(source, MbrBlockReaderConfig::new(selector, block_size)).await
+    }
+
+    pub async fn open_with_config<S: BlockReader + 'static>(
+        source: S,
+        config: MbrBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
+        config.validate()?;
+        info!(selector = %config.selector, block_size = config.block_size, "constructing MBR-backed reader");
 
         let source_block_size = source.block_size();
         if source_block_size == 0 || !source_block_size.is_power_of_two() {
@@ -102,7 +153,11 @@ impl MbrBlockReader {
         }
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
-        let source_identity = gibblox_core::block_identity_string(source.as_ref());
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| gibblox_core::block_identity_string(source.as_ref()));
+        let config = config.with_source_identity(source_identity);
         let byte_reader = ByteRangeReader::new(
             Arc::clone(&source),
             source_block_size as usize,
@@ -116,7 +171,7 @@ impl MbrBlockReader {
         let header = parse_mbr_header(&mbr_sector)?;
         let disk_signature = mbr_disk_signature(&header);
 
-        let selected = select_partition_entry(&header, &selector)?;
+        let selected = select_partition_entry(&header, &config.selector)?;
         let partition_offset_bytes = u64::from(selected.first_lba)
             .checked_mul(MBR_SECTOR_SIZE as u64)
             .ok_or_else(|| {
@@ -159,20 +214,19 @@ impl MbrBlockReader {
             "resolved MBR partition"
         );
 
-        let identity = format!(
-            "mbr-partition:({}):index={}:partuuid={}",
-            source_identity, selected.index, partition_partuuid
-        );
-
         Ok(Self {
-            block_size,
+            block_size: config.block_size,
             partition_size_bytes,
             partition_index: selected.index,
             partition_partuuid,
             byte_reader,
             partition_offset_bytes,
-            identity,
+            config,
         })
+    }
+
+    pub fn config(&self) -> &MbrBlockReaderConfig {
+        &self.config
     }
 
     pub fn partition_size_bytes(&self) -> u64 {
@@ -199,7 +253,7 @@ impl BlockReader for MbrBlockReader {
     }
 
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
-        out.write_str(&self.identity)
+        self.config.write_identity(out)
     }
 
     async fn read_blocks(
