@@ -17,6 +17,13 @@ context from downstream repositories.
 - No compatibility shims are required for unreleased behavior.
 - Existing MessagePort block RPC (`gibblox-blockreader-messageport`) remains the data plane.
 
+## Dependency: Identity Work
+
+- This plan depends on the config-backed identity pattern in `docs/plans/identity.md` (landed
+  first or implemented in lockstep).
+- `open_pipeline` endpoint identity and shared-worker stage/coalescing keys must come from
+  config-derived identity handles, not ad-hoc runtime formatting.
+
 ## Problem Statement
 
 Web consumers currently need custom startup glue for worker scripts, pipeline-open RPC fields,
@@ -187,6 +194,8 @@ Add tracing for operations that affect correctness or performance:
 - Define and implement stable startup check-in + `open_pipeline` protocol.
 - Provide dedicated-worker host API.
 - Keep MessagePort block RPC unchanged.
+- Use config-derived identity for endpoint metadata and key inputs (per
+  `docs/plans/identity.md`).
 
 ### Phase 2: Shared-worker runtime
 
@@ -224,6 +233,7 @@ Run targeted checks during implementation:
 - `cargo fmt`
 - `cargo check -p gibblox-web-worker`
 - `cargo check -p gibblox-blockreader-messageport`
+- `cargo check -p gibblox-core`
 - `cargo check -p gibblox-pipeline`
 - `cargo check -p gibblox-pipeline-web` (if introduced/touched)
 - `cargo test -p gibblox-web-worker` (as tests are added)
