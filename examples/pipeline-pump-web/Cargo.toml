@@ -1,0 +1,48 @@
+[package]
+name = "gibblox-pipeline-pump-web"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+publish = false
+description = "WASM benchmark page for pumping gibblox pipelines through a web worker."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+axum = "0.8.6"
+gibblox-pipeline = { workspace = true }
+mime_guess = "2.0.5"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+gibblox-core = { workspace = true }
+gibblox-web-worker = { workspace = true }
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "Blob",
+    "DataTransfer",
+    "Document",
+    "DomTokenList",
+    "DragEvent",
+    "Element",
+    "Event",
+    "EventTarget",
+    "File",
+    "FileList",
+    "HtmlButtonElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "Response",
+    "Window",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
+] }
