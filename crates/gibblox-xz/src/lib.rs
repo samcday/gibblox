@@ -43,19 +43,10 @@ impl Default for XzReaderConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct XzBlockReaderConfig {
     pub reader: XzReaderConfig,
     pub source_identity: Option<String>,
-}
-
-impl Default for XzBlockReaderConfig {
-    fn default() -> Self {
-        Self {
-            reader: XzReaderConfig::default(),
-            source_identity: None,
-        }
-    }
 }
 
 impl XzBlockReaderConfig {
