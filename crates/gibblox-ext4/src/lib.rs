@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use core::{error::Error, fmt};
 use ext4_view::Ext4ReadAsync;
 use gibblox_core::{
-    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext, block_identity_string,
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext, block_identity_string,
 };
 use tracing::{info, trace};
 
@@ -24,6 +25,48 @@ pub enum Ext4EntryType {
     Directory,
     Symlink,
     Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ext4FileBlockReaderConfig {
+    pub path: String,
+    pub block_size: u32,
+    pub source_identity: Option<String>,
+}
+
+impl Ext4FileBlockReaderConfig {
+    pub fn new(path: &str, block_size: u32) -> GibbloxResult<Self> {
+        if block_size == 0 || !block_size.is_power_of_two() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero power of two",
+            ));
+        }
+        Ok(Self {
+            path: normalize_path(path)?,
+            block_size,
+            source_identity: None,
+        })
+    }
+
+    pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
+        self.source_identity = Some(source_identity.into());
+        self
+    }
+}
+
+impl BlockReaderConfigIdentity for Ext4FileBlockReaderConfig {
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        out.write_str("ext4-file:(")?;
+        out.write_str(
+            self.source_identity
+                .as_deref()
+                .unwrap_or("<unknown-source>"),
+        )?;
+        write!(out, "):path=len:{}:", self.path.len())?;
+        out.write_str(self.path.as_str())?;
+        write!(out, ":block_size={}", self.block_size)
+    }
 }
 
 /// Async-friendly ext4 filesystem wrapper backed by a gibblox `BlockReader`.
@@ -189,8 +232,8 @@ pub struct Ext4FileBlockReader {
     block_size: u32,
     file_size_bytes: u64,
     file_path: String,
-    source_identity: String,
     source: Arc<dyn BlockReader>,
+    config: Ext4FileBlockReaderConfig,
 }
 
 impl Ext4FileBlockReader {
@@ -200,17 +243,23 @@ impl Ext4FileBlockReader {
         path: &str,
         block_size: u32,
     ) -> GibbloxResult<Self> {
-        info!(path, block_size, "constructing ext4-backed reader");
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
+        Self::open_with_config(source, Ext4FileBlockReaderConfig::new(path, block_size)?).await
+    }
+
+    pub async fn open_with_config<S: BlockReader + 'static>(
+        source: S,
+        config: Ext4FileBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
+        info!(path = %config.path, block_size = config.block_size, "constructing ext4-backed reader");
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
         let fs = Ext4Fs::open(Arc::clone(&source)).await?;
-        let file_path = normalize_path(path)?;
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| fs.source_identity().to_string());
+        let config = config.with_source_identity(source_identity);
+        let file_path = config.path.clone();
         let file_size_bytes = fs
             .fs
             .open(file_path.as_str())
@@ -218,14 +267,18 @@ impl Ext4FileBlockReader {
             .metadata()
             .len();
 
-        info!(path = file_path, file_size_bytes, "resolved file from ext4");
+        info!(path = %file_path, file_size_bytes, "resolved file from ext4");
         Ok(Self {
-            block_size,
+            block_size: config.block_size,
             file_size_bytes,
             file_path,
-            source_identity: fs.source_identity().to_string(),
             source,
+            config,
         })
+    }
+
+    pub fn config(&self) -> &Ext4FileBlockReaderConfig {
+        &self.config
     }
 
     pub fn file_size_bytes(&self) -> u64 {
@@ -244,11 +297,7 @@ impl BlockReader for Ext4FileBlockReader {
     }
 
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
-        write!(
-            out,
-            "ext4-file:({}):{}",
-            self.source_identity, self.file_path
-        )
+        self.config.write_identity(out)
     }
 
     async fn read_blocks(

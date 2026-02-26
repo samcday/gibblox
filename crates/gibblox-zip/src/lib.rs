@@ -12,7 +12,10 @@ use alloc::{
     sync::Arc,
 };
 use async_trait::async_trait;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use gibblox_core::{
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext,
+};
 use tracing::trace;
 
 mod zip;
@@ -22,20 +25,64 @@ use zip::bytes::ByteReader;
 
 const STORED_COMPRESSION_METHOD: u16 = 0;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZipEntryBlockReaderConfig {
+    pub entry_name: String,
+    pub source_identity: Option<String>,
+}
+
+impl ZipEntryBlockReaderConfig {
+    pub fn new(entry_name: &str) -> GibbloxResult<Self> {
+        Ok(Self {
+            entry_name: normalize_entry_name(entry_name)?,
+            source_identity: None,
+        })
+    }
+
+    pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
+        self.source_identity = Some(source_identity.into());
+        self
+    }
+}
+
+impl BlockReaderConfigIdentity for ZipEntryBlockReaderConfig {
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        out.write_str("zip-entry:(")?;
+        out.write_str(
+            self.source_identity
+                .as_deref()
+                .unwrap_or("<unknown-source>"),
+        )?;
+        out.write_str("):entry=")?;
+        write!(out, "len:{}:", self.entry_name.len())?;
+        out.write_str(self.entry_name.as_str())
+    }
+}
+
 /// Block reader that exposes a single file entry from a ZIP archive.
 pub struct ZipEntryBlockReader {
     block_size: u32,
-    entry_name: String,
     entry_size_bytes: u64,
     entry_data_offset: u64,
-    source: Arc<dyn BlockReader>,
     byte_reader: ByteReader,
+    config: ZipEntryBlockReaderConfig,
 }
 
 impl ZipEntryBlockReader {
     /// Open `entry_name` from a ZIP archive exposed through `source`.
     pub async fn new(entry_name: &str, source: Arc<dyn BlockReader>) -> GibbloxResult<Self> {
-        let entry_name = normalize_entry_name(entry_name)?;
+        Self::open_with_config(source, ZipEntryBlockReaderConfig::new(entry_name)?).await
+    }
+
+    pub async fn open_with_config(
+        source: Arc<dyn BlockReader>,
+        config: ZipEntryBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| gibblox_core::block_identity_string(source.as_ref()));
+        let config = config.with_source_identity(source_identity);
 
         let source_block_size = source.block_size();
         if source_block_size == 0 || !source_block_size.is_power_of_two() {
@@ -60,7 +107,7 @@ impl ZipEntryBlockReader {
             source_block_size as usize,
             archive_size_bytes,
         );
-        let entry = locate_entry(&byte_reader, archive_size_bytes, &entry_name)
+        let entry = locate_entry(&byte_reader, archive_size_bytes, config.entry_name.as_str())
             .await
             .map_err(GibbloxError::from)?;
 
@@ -76,12 +123,15 @@ impl ZipEntryBlockReader {
 
         Ok(Self {
             block_size: source_block_size,
-            entry_name: entry.name,
             entry_size_bytes: entry.size_bytes,
             entry_data_offset: entry.data_offset,
-            source,
             byte_reader,
+            config,
         })
+    }
+
+    pub fn config(&self) -> &ZipEntryBlockReaderConfig {
+        &self.config
     }
 
     pub fn entry_size_bytes(&self) -> u64 {
@@ -100,17 +150,7 @@ impl BlockReader for ZipEntryBlockReader {
     }
 
     fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        out.write_str("zip-entry:(")?;
-        self.source.write_identity(out)?;
-        write!(
-            out,
-            "):{}@{}+{}:{}+{}",
-            self.entry_name,
-            self.entry_data_offset,
-            self.entry_size_bytes,
-            STORED_COMPRESSION_METHOD,
-            self.entry_size_bytes
-        )
+        self.config.write_identity(out)
     }
 
     async fn read_blocks(
