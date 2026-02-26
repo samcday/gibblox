@@ -772,6 +772,7 @@ dependencies = [
 name = "gibblox-pipeline"
 version = "0.0.1-rc.8"
 dependencies = [
+ "gibblox-core",
  "postcard",
  "serde",
  "serde_yaml",

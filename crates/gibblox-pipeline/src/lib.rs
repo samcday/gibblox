@@ -8,6 +8,7 @@ extern crate std;
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::fmt;
 
+use gibblox_core::{BlockReaderConfigIdentity, config_identity_string, derive_config_identity_id};
 use serde::{Deserialize, Serialize};
 
 use crate::bin::{
@@ -83,6 +84,14 @@ pub fn pipeline_bin_header_version(bytes: &[u8]) -> Option<u16> {
         bytes[PIPELINE_BIN_MAGIC.len()],
         bytes[PIPELINE_BIN_MAGIC.len() + 1],
     ]))
+}
+
+pub fn pipeline_identity_string(source: &PipelineSource) -> String {
+    config_identity_string(source)
+}
+
+pub fn pipeline_identity_id(source: &PipelineSource) -> u32 {
+    derive_config_identity_id(source)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,6 +246,93 @@ fn strip_query_and_fragment(value: &str) -> &str {
         end = end.min(pos);
     }
     &value[..end]
+}
+
+impl BlockReaderConfigIdentity for PipelineSource {
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        write_pipeline_identity(self, out)
+    }
+}
+
+fn write_pipeline_identity(source: &PipelineSource, out: &mut dyn fmt::Write) -> fmt::Result {
+    match source {
+        PipelineSource::Http(source) => {
+            out.write_str("http{")?;
+            write_string_field(out, "url", source.http.as_str())?;
+            out.write_str("}")
+        }
+        PipelineSource::File(source) => {
+            out.write_str("file{")?;
+            write_string_field(out, "path", source.file.as_str())?;
+            out.write_str("}")
+        }
+        PipelineSource::Casync(source) => {
+            out.write_str("casync{")?;
+            write_string_field(out, "index", source.casync.index.as_str())?;
+            write_opt_string_field(out, "chunk_store", source.casync.chunk_store.as_deref())?;
+            out.write_str("}")
+        }
+        PipelineSource::Xz(source) => {
+            out.write_str("xz{source=")?;
+            write_pipeline_identity(source.xz.as_ref(), out)?;
+            out.write_str("}")
+        }
+        PipelineSource::AndroidSparseImg(source) => {
+            out.write_str("android_sparseimg{source=")?;
+            write_pipeline_identity(source.android_sparseimg.as_ref(), out)?;
+            out.write_str("}")
+        }
+        PipelineSource::Mbr(source) => {
+            out.write_str("mbr{")?;
+            write_opt_string_field(out, "partuuid", source.mbr.partuuid.as_deref())?;
+            write_opt_u32_field(out, "index", source.mbr.index)?;
+            out.write_str("source=")?;
+            write_pipeline_identity(source.mbr.source.as_ref(), out)?;
+            out.write_str("}")
+        }
+        PipelineSource::Gpt(source) => {
+            out.write_str("gpt{")?;
+            write_opt_string_field(out, "partlabel", source.gpt.partlabel.as_deref())?;
+            write_opt_string_field(out, "partuuid", source.gpt.partuuid.as_deref())?;
+            write_opt_u32_field(out, "index", source.gpt.index)?;
+            out.write_str("source=")?;
+            write_pipeline_identity(source.gpt.source.as_ref(), out)?;
+            out.write_str("}")
+        }
+    }
+}
+
+fn write_string_field(out: &mut dyn fmt::Write, key: &str, value: &str) -> fmt::Result {
+    write!(out, "{key}=len:{}:", value.len())?;
+    out.write_str(value)?;
+    out.write_str(";")
+}
+
+fn write_opt_string_field(out: &mut dyn fmt::Write, key: &str, value: Option<&str>) -> fmt::Result {
+    match value {
+        Some(value) => {
+            out.write_str(key)?;
+            out.write_str("=some:")?;
+            write_string_field(out, "value", value)
+        }
+        None => {
+            out.write_str(key)?;
+            out.write_str("=none;")
+        }
+    }
+}
+
+fn write_opt_u32_field(out: &mut dyn fmt::Write, key: &str, value: Option<u32>) -> fmt::Result {
+    match value {
+        Some(value) => {
+            out.write_str(key)?;
+            write!(out, "=some:{value};")
+        }
+        None => {
+            out.write_str(key)?;
+            out.write_str("=none;")
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -471,7 +567,8 @@ mod tests {
         PipelineSourceAndroidSparseImgSource, PipelineSourceCasync, PipelineSourceCasyncSource,
         PipelineSourceGpt, PipelineSourceGptSource, PipelineSourceHttpSource, PipelineSourceMbr,
         PipelineSourceMbrSource, PipelineSourceXzSource, PipelineValidationError, decode_pipeline,
-        encode_pipeline, pipeline_bin_header_version, validate_pipeline,
+        encode_pipeline, pipeline_bin_header_version, pipeline_identity_id,
+        pipeline_identity_string, validate_pipeline,
     };
 
     #[test]
@@ -624,5 +721,40 @@ gpt:
         let bytes = encode_pipeline(&source).expect("encode pipeline");
 
         assert_eq!(pipeline_bin_header_version(&bytes), Some(1));
+    }
+
+    #[test]
+    fn identity_is_stable_for_same_descriptor() {
+        let source = PipelineSource::Gpt(PipelineSourceGptSource {
+            gpt: PipelineSourceGpt {
+                partlabel: None,
+                partuuid: Some(String::from("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")),
+                index: None,
+                source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
+                    xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
+                        http: String::from("https://cdn.example.invalid/device.img.xz"),
+                    })),
+                })),
+            },
+        });
+
+        assert_eq!(
+            pipeline_identity_string(&source),
+            pipeline_identity_string(&source)
+        );
+        assert_eq!(pipeline_identity_id(&source), pipeline_identity_id(&source));
+    }
+
+    #[test]
+    fn identity_changes_when_descriptor_changes() {
+        let a = PipelineSource::Http(PipelineSourceHttpSource {
+            http: String::from("https://cdn.example.invalid/rootfs-a.img"),
+        });
+        let b = PipelineSource::Http(PipelineSourceHttpSource {
+            http: String::from("https://cdn.example.invalid/rootfs-b.img"),
+        });
+
+        assert_ne!(pipeline_identity_string(&a), pipeline_identity_string(&b));
+        assert_ne!(pipeline_identity_id(&a), pipeline_identity_id(&b));
     }
 }
