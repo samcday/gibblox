@@ -1,6 +1,8 @@
 use async_trait::async_trait;
-use gibblox_cache::{CacheOps, derive_cached_reader_identity_id};
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
+use gibblox_cache::{CacheOps, derive_cached_config_identity_id, derive_cached_reader_identity_id};
+use gibblox_core::{
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -54,6 +56,13 @@ impl OpfsCacheOps {
     pub async fn open_for_reader<R: BlockReader + ?Sized>(reader: &R) -> GibbloxResult<Self> {
         let total_blocks = reader.total_blocks().await?;
         let cache_id = derive_cached_reader_identity_id(reader, total_blocks);
+        Self::open(cache_id).await
+    }
+
+    pub async fn open_for_config<C: BlockReaderConfigIdentity + ?Sized>(
+        config: &C,
+    ) -> GibbloxResult<Self> {
+        let cache_id = derive_cached_config_identity_id(config);
         Self::open(cache_id).await
     }
 }

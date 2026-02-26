@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use core::fmt;
 use futures_channel::oneshot;
 use gibblox_core::{
-    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
-    derive_block_identity_id,
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext, derive_block_identity_id, derive_config_identity_id,
 };
 use tracing::{debug, trace};
 
@@ -620,9 +620,24 @@ fn write_cached_identity<S: BlockReader + ?Sized>(
     out.write_str(")")
 }
 
+fn write_cached_config_identity<C: BlockReaderConfigIdentity + ?Sized>(
+    config: &C,
+    out: &mut dyn fmt::Write,
+) -> fmt::Result {
+    out.write_str("cached:(")?;
+    config.write_identity(out)?;
+    out.write_str(")")
+}
+
 pub fn cached_reader_identity_string<S: BlockReader + ?Sized>(inner: &S) -> String {
     let mut identity = String::new();
     let _ = write_cached_identity(inner, &mut identity);
+    identity
+}
+
+pub fn cached_config_identity_string<C: BlockReaderConfigIdentity + ?Sized>(config: &C) -> String {
+    let mut identity = String::new();
+    let _ = write_cached_config_identity(config, &mut identity);
     identity
 }
 
@@ -633,6 +648,20 @@ pub fn derive_cached_reader_identity_id<S: BlockReader + ?Sized>(
     derive_block_identity_id(inner.block_size(), total_blocks, |writer| {
         write_cached_identity(inner, writer)
     })
+}
+
+pub fn derive_cached_config_identity_id<C: BlockReaderConfigIdentity + ?Sized>(config: &C) -> u32 {
+    struct CachedConfigIdentity<'a, C: BlockReaderConfigIdentity + ?Sized>(&'a C);
+
+    impl<C: BlockReaderConfigIdentity + ?Sized> BlockReaderConfigIdentity
+        for CachedConfigIdentity<'_, C>
+    {
+        fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+            write_cached_config_identity(self.0, out)
+        }
+    }
+
+    derive_config_identity_id(&CachedConfigIdentity(config))
 }
 
 struct CacheLayout {
