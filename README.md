@@ -25,6 +25,11 @@ To gibblox you will always be just another block.
 - Offer a file-backed cache layer with in-flight coalescing.
 - Keep core crates `no_std + alloc` where practical.
 
+## Install CLI
+- `cargo binstall gibblox-cli`
+- Release candidates are installable with an explicit version, for example `cargo binstall gibblox-cli --version 0.0.1-rc.1`.
+- Prebuilt release archives are published for Linux (`x86_64-unknown-linux-gnu`), macOS (`x86_64-apple-darwin`, `aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`).
+
 ## Crates
 - `gobblytes-core`: core filesystem abstraction traits, OSTree wrapper, and test helpers.
 - `gobblytes-erofs`: EROFS-backed filesystem adapter.

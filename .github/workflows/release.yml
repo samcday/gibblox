@@ -96,14 +96,44 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: just publish
 
+  publish-cli-binaries:
+    needs: [gate, release, ci]
+    if: needs.gate.outputs.mode == 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: gibblox-cli
+          target: ${{ matrix.target }}
+          tar: unix
+          zip: windows
+          token: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+
   pass:
     name: ✅ Pass
-    needs: [gate, release, ci, publish-crates]
+    needs: [gate, release, ci, publish-crates, publish-cli-binaries]
     runs-on: ubuntu-latest
     if: always() && needs.gate.outputs.enabled == 'true'
     steps:
       - uses: re-actors/alls-green@release/v1
         with:
+          allowed-skips: publish-cli-binaries
           jobs: ${{ toJSON(needs) }}
 
   publish-release:
