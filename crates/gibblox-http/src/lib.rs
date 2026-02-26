@@ -4,7 +4,10 @@
 //! and wasm32 (fetch) targets.
 
 use async_trait::async_trait;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use gibblox_core::{
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext,
+};
 use std::ops::RangeInclusive;
 use tracing::debug;
 use url::Url;
@@ -15,50 +18,90 @@ mod native;
 mod wasm;
 
 /// HTTP-backed read-only gibblox source.
+#[derive(Clone, Debug)]
+pub struct HttpBlockReaderConfig {
+    pub url: Url,
+    pub block_size: u32,
+    pub size_bytes: Option<u64>,
+}
+
+impl HttpBlockReaderConfig {
+    pub fn new(url: Url, block_size: u32) -> Self {
+        Self {
+            url,
+            block_size,
+            size_bytes: None,
+        }
+    }
+
+    pub fn with_size(url: Url, block_size: u32, size_bytes: u64) -> Self {
+        Self {
+            url,
+            block_size,
+            size_bytes: Some(size_bytes),
+        }
+    }
+
+    fn validate(&self) -> GibbloxResult<()> {
+        if self.block_size == 0 || !self.block_size.is_power_of_two() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero power of two",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl BlockReaderConfigIdentity for HttpBlockReaderConfig {
+    fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        write!(out, "http:{}", self.url.as_str())
+    }
+}
+
+/// HTTP-backed read-only gibblox source.
 pub struct HttpBlockReader {
-    url: Url,
-    block_size: u32,
+    config: HttpBlockReaderConfig,
     size_bytes: u64,
     inner: HttpClient,
 }
 
 impl HttpBlockReader {
-    /// Construct a new HTTP source. `url` must be absolute and point to the backing object.
-    pub async fn new(url: Url, block_size: u32) -> GibbloxResult<Self> {
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
+    /// Construct a new HTTP source from config.
+    pub async fn open(config: HttpBlockReaderConfig) -> GibbloxResult<Self> {
+        config.validate()?;
         let client = HttpClient::new()?;
-        tracing::debug!(url = %url, "http read source probe");
-        let size_bytes = client
-            .probe_size(&url)
-            .await
-            .map_err(map_http_err("probe size"))?;
+        let size_bytes = if let Some(size_bytes) = config.size_bytes {
+            size_bytes
+        } else {
+            tracing::debug!(url = %config.url, "http read source probe");
+            client
+                .probe_size(&config.url)
+                .await
+                .map_err(map_http_err("probe size"))?
+        };
         Ok(Self {
-            url,
-            block_size,
+            config,
             size_bytes,
             inner: client,
         })
     }
 
+    /// Construct a new HTTP source. `url` must be absolute and point to the backing object.
+    pub async fn new(url: Url, block_size: u32) -> GibbloxResult<Self> {
+        Self::open(HttpBlockReaderConfig::new(url, block_size)).await
+    }
+
     /// Construct with an explicit size (skips remote probe).
     pub async fn new_with_size(url: Url, block_size: u32, size_bytes: u64) -> GibbloxResult<Self> {
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
-        Ok(Self {
-            url,
-            block_size,
-            size_bytes,
-            inner: HttpClient::new()?,
-        })
+        Self::open(HttpBlockReaderConfig::with_size(
+            url, block_size, size_bytes,
+        ))
+        .await
+    }
+
+    pub fn config(&self) -> &HttpBlockReaderConfig {
+        &self.config
     }
 
     /// Total size in bytes.
@@ -68,7 +111,7 @@ impl HttpBlockReader {
 
     /// Logical block size in bytes.
     pub fn block_size(&self) -> u32 {
-        self.block_size
+        self.config.block_size
     }
 
     fn offset_range(&self, offset: u64, len: usize) -> GibbloxResult<RangeInclusive<u64>> {
@@ -88,15 +131,15 @@ impl HttpBlockReader {
 #[async_trait]
 impl BlockReader for HttpBlockReader {
     fn block_size(&self) -> u32 {
-        self.block_size
+        self.config.block_size
     }
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
-        Ok(self.size_bytes.div_ceil(self.block_size as u64))
+        Ok(self.size_bytes.div_ceil(self.config.block_size as u64))
     }
 
     fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        write!(out, "http:{}", self.url.as_str())
+        self.config.write_identity(out)
     }
 
     async fn read_blocks(
@@ -108,7 +151,7 @@ impl BlockReader for HttpBlockReader {
         if buf.is_empty() {
             return Ok(0);
         }
-        if !buf.len().is_multiple_of(self.block_size as usize) {
+        if !buf.len().is_multiple_of(self.config.block_size as usize) {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 "buffer length must align to block size",
@@ -123,14 +166,16 @@ impl BlockReader for HttpBlockReader {
             ));
         }
 
-        let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-        })?;
+        let offset = lba
+            .checked_mul(self.config.block_size as u64)
+            .ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
+            })?;
         let available = (self.size_bytes - offset) as usize;
         let read_len = available.min(buf.len());
         let range = self.offset_range(offset, read_len)?;
         tracing::trace!(
-            url = %self.url,
+            url = %self.config.url,
             start = *range.start(),
             end = *range.end(),
             len = read_len,
@@ -138,7 +183,7 @@ impl BlockReader for HttpBlockReader {
         );
         let read = self
             .inner
-            .read_range(&self.url, range.clone(), &mut buf[..read_len], ctx)
+            .read_range(&self.config.url, range.clone(), &mut buf[..read_len], ctx)
             .await
             .map_err(map_http_err("read range"))?;
         if read != read_len {

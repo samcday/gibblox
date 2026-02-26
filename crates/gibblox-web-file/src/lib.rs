@@ -4,7 +4,7 @@ extern crate alloc;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use alloc::{boxed::Box, format, string::String, sync::Arc};
+    use alloc::{boxed::Box, format, string::String};
     use async_trait::async_trait;
     use core::{
         fmt,
@@ -12,7 +12,10 @@ mod wasm {
         pin::Pin,
         task::{Context, Poll},
     };
-    use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+    use gibblox_core::{
+        BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+        ReadContext,
+    };
     use js_sys::{Promise, Uint8Array};
     use tracing::{debug, trace};
     use wasm_bindgen::JsValue;
@@ -59,15 +62,16 @@ mod wasm {
         }
     }
 
-    pub struct WebFileBlockReader {
-        file: SendFile,
-        size_bytes: u64,
-        block_size: u32,
-        identity: Arc<str>,
+    #[derive(Clone, Debug)]
+    pub struct WebFileBlockReaderConfig {
+        pub block_size: u32,
+        pub file_name: String,
+        pub size_bytes: u64,
+        pub last_modified: i64,
     }
 
-    impl WebFileBlockReader {
-        pub fn new(file: File, block_size: u32) -> GibbloxResult<Self> {
+    impl WebFileBlockReaderConfig {
+        fn from_send_file(file: &SendFile, block_size: u32) -> GibbloxResult<Self> {
             if block_size == 0 || !block_size.is_power_of_two() {
                 return Err(GibbloxError::with_message(
                     GibbloxErrorKind::InvalidInput,
@@ -75,48 +79,73 @@ mod wasm {
                 ));
             }
 
-            let file = SendFile(file);
-            let size_bytes = f64_to_u64(file.as_blob().size(), "file size")?;
-            let last_modified = f64_to_i64(file.last_modified(), "file last_modified")?;
-            let name = file.name();
-            debug!(
-                name = %name,
-                size_bytes,
-                last_modified,
-                block_size,
-                "opening web file-backed source"
-            );
-
-            let identity = Arc::<str>::from(format!(
-                "web-file:{}:{}:{}",
-                name, size_bytes, last_modified
-            ));
-
             Ok(Self {
-                file,
-                size_bytes,
                 block_size,
-                identity,
+                file_name: file.name(),
+                size_bytes: f64_to_u64(file.as_blob().size(), "file size")?,
+                last_modified: f64_to_i64(file.last_modified(), "file last_modified")?,
             })
         }
 
+        pub fn from_file(file: &File, block_size: u32) -> GibbloxResult<Self> {
+            Self::from_send_file(&SendFile(file.clone()), block_size)
+        }
+    }
+
+    impl BlockReaderConfigIdentity for WebFileBlockReaderConfig {
+        fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+            write!(
+                out,
+                "web-file:{}:{}:{}",
+                self.file_name, self.size_bytes, self.last_modified
+            )
+        }
+    }
+
+    pub struct WebFileBlockReader {
+        file: SendFile,
+        config: WebFileBlockReaderConfig,
+    }
+
+    impl WebFileBlockReader {
+        pub fn new(file: File, block_size: u32) -> GibbloxResult<Self> {
+            let file = SendFile(file);
+            let config = WebFileBlockReaderConfig::from_send_file(&file, block_size)?;
+            debug!(
+                name = %config.file_name,
+                size_bytes = config.size_bytes,
+                last_modified = config.last_modified,
+                block_size = config.block_size,
+                "opening web file-backed source"
+            );
+
+            Ok(Self { file, config })
+        }
+
+        pub fn config(&self) -> &WebFileBlockReaderConfig {
+            &self.config
+        }
+
         pub fn size_bytes(&self) -> u64 {
-            self.size_bytes
+            self.config.size_bytes
         }
     }
 
     #[async_trait]
     impl BlockReader for WebFileBlockReader {
         fn block_size(&self) -> u32 {
-            self.block_size
+            self.config.block_size
         }
 
         async fn total_blocks(&self) -> GibbloxResult<u64> {
-            Ok(self.size_bytes.div_ceil(self.block_size as u64))
+            Ok(self
+                .config
+                .size_bytes
+                .div_ceil(self.config.block_size as u64))
         }
 
         fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
-            out.write_str(self.identity.as_ref())
+            self.config.write_identity(out)
         }
 
         async fn read_blocks(
@@ -128,7 +157,7 @@ mod wasm {
             if buf.is_empty() {
                 return Ok(0);
             }
-            if !buf.len().is_multiple_of(self.block_size as usize) {
+            if !buf.len().is_multiple_of(self.config.block_size as usize) {
                 return Err(GibbloxError::with_message(
                     GibbloxErrorKind::InvalidInput,
                     "buffer length must align to block size",
@@ -143,10 +172,12 @@ mod wasm {
                 ));
             }
 
-            let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-            })?;
-            let remaining = self.size_bytes.checked_sub(offset).ok_or_else(|| {
+            let offset = lba
+                .checked_mul(self.config.block_size as u64)
+                .ok_or_else(|| {
+                    GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
+                })?;
+            let remaining = self.config.size_bytes.checked_sub(offset).ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset out of range")
             })?;
             let read_len = (buf.len() as u64).min(remaining) as usize;
