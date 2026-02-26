@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gibblox Pipeline Pump</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #10233a;
+        --ink-dim: #3f566f;
+        --line: rgba(16, 35, 58, 0.14);
+        --panel: rgba(255, 255, 255, 0.84);
+        --panel-strong: rgba(255, 255, 255, 0.95);
+        --accent: #0d8aa8;
+        --accent-strong: #0a6f88;
+        --error: #a62f4a;
+        --ok: #136f55;
+        --glow: rgba(13, 138, 168, 0.28);
+        --drop: rgba(13, 138, 168, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 8% 12%, rgba(13, 138, 168, 0.2), transparent 38%),
+          radial-gradient(circle at 92% 0%, rgba(243, 142, 67, 0.24), transparent 34%),
+          linear-gradient(165deg, #eff8fc 0%, #f6fbff 56%, #eef4f8 100%);
+      }
+
+      .shell {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 2.5rem 1rem 2rem;
+        display: grid;
+        gap: 1rem;
+      }
+
+      .hero {
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 1.2rem 1.25rem;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 10px 34px rgba(31, 58, 88, 0.08);
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: clamp(1.35rem, 2.8vw, 2rem);
+        letter-spacing: 0.01em;
+      }
+
+      .hero p {
+        margin: 0.5rem 0 0;
+        color: var(--ink-dim);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1rem;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 1rem;
+        box-shadow: 0 8px 28px rgba(31, 58, 88, 0.08);
+      }
+
+      .panel h2 {
+        margin: 0 0 0.75rem;
+        font-size: 1.05rem;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.6rem;
+        align-items: center;
+      }
+
+      .stack {
+        display: grid;
+        gap: 0.65rem;
+      }
+
+      label {
+        color: var(--ink-dim);
+        font-size: 0.9rem;
+      }
+
+      input[type="text"],
+      input[type="number"] {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.95);
+        color: var(--ink);
+        border-radius: 10px;
+        padding: 0.62rem 0.74rem;
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        border-radius: 11px;
+        background: var(--accent);
+        color: white;
+        font-weight: 650;
+        font-family: inherit;
+        padding: 0.62rem 0.9rem;
+        cursor: pointer;
+        transition: transform 140ms ease, box-shadow 140ms ease, background 160ms ease;
+        box-shadow: 0 8px 20px rgba(13, 138, 168, 0.28);
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        background: var(--accent-strong);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .button-secondary {
+        background: #456788;
+        box-shadow: 0 8px 20px rgba(38, 68, 96, 0.25);
+      }
+
+      .drop-zone {
+        border: 2px dashed rgba(13, 138, 168, 0.38);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.72);
+        padding: 1rem;
+        text-align: center;
+        color: var(--ink-dim);
+        transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+      }
+
+      .drop-zone.is-drop-active {
+        border-color: var(--accent);
+        background: var(--drop);
+        box-shadow: 0 0 0 6px var(--glow);
+      }
+
+      .status-line {
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.9);
+        padding: 0.7rem 0.82rem;
+        font-size: 0.95rem;
+      }
+
+      .status-info {
+        color: var(--ok);
+      }
+
+      .status-error {
+        color: var(--error);
+      }
+
+      .stats {
+        margin: 0;
+        min-height: 330px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: #f9fcff;
+        padding: 1rem;
+        overflow: auto;
+        font-family: "IBM Plex Mono", "JetBrains Mono", monospace;
+        font-size: 0.86rem;
+        line-height: 1.45;
+        color: #0f2e4d;
+      }
+
+      @media (max-width: 740px) {
+        .row {
+          grid-template-columns: 1fr;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <h1>gibblox Pipeline Pump</h1>
+        <p>
+          Feed a binary gibblox pipeline descriptor by URL or local file, then hammer it through
+          <code>gibblox-web-worker</code> and watch throughput stats live.
+        </p>
+      </section>
+
+      <section class="grid">
+        <article class="panel stack">
+          <h2>Pipeline Source</h2>
+          <label for="pipeline-url">Pipeline URL</label>
+          <div class="row">
+            <input
+              id="pipeline-url"
+              type="text"
+              value="/pipeline.bin"
+              placeholder="https://example.invalid/pipeline.bin"
+              spellcheck="false"
+            />
+            <button id="load-url" type="button">Load URL</button>
+          </div>
+
+          <div class="row">
+            <button id="open-file-picker" class="button-secondary" type="button">
+              Pick Local File
+            </button>
+            <button id="stop-pump" type="button" disabled>Stop Pump</button>
+          </div>
+
+          <input id="pipeline-file" type="file" hidden />
+          <div id="drop-zone" class="drop-zone">
+            Drag and drop a local pipeline file here.
+          </div>
+        </article>
+
+        <article class="panel stack">
+          <h2>Pump Controls</h2>
+          <label for="concurrency">Concurrent lanes</label>
+          <input id="concurrency" type="number" min="1" max="64" value="8" />
+
+          <label for="request-kib">Request size (KiB)</label>
+          <input id="request-kib" type="number" min="1" max="65536" value="1024" />
+
+          <div id="status-line" class="status-line status-info">Booting ...</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Live Stats</h2>
+        <pre id="stats-output" class="stats">waiting for first run...</pre>
+      </section>
+    </main>
+
+    <script type="module">
+      import init, { bootstrap_main } from "./pkg/gibblox_pipeline_pump_web.js";
+
+      async function run() {
+        await init();
+        bootstrap_main();
+      }
+
+      run().catch((error) => {
+        const text = String(error && error.stack ? error.stack : error);
+        const status = document.getElementById("status-line");
+        if (status) {
+          status.className = "status-line status-error";
+          status.textContent = `bootstrap failed: ${text}`;
+        }
+        console.error(error);
+      });
+    </script>
+  </body>
+</html>
