@@ -197,6 +197,19 @@ mod wasm {
                 }
             };
 
+            if metadata.protocol_version != WORKER_PROTOCOL_VERSION {
+                worker.set_onmessage(None);
+                worker.set_onerror(None);
+                worker.terminate();
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Unsupported,
+                    format!(
+                        "gibblox worker protocol mismatch: host={WORKER_PROTOCOL_VERSION} worker={}",
+                        metadata.protocol_version
+                    ),
+                ));
+            }
+
             Ok(Self {
                 worker,
                 metadata,
