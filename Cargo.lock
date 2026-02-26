@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-pipeline-pump-web"
-version = "0.0.1-rc.8"
+version = "0.0.1-rc.10"
 dependencies = [
  "axum",
  "console_error_panic_hook",
