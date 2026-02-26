@@ -36,12 +36,7 @@ pub struct Ext4FileBlockReaderConfig {
 
 impl Ext4FileBlockReaderConfig {
     pub fn new(path: &str, block_size: u32) -> GibbloxResult<Self> {
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
+        validate_block_size(block_size)?;
         Ok(Self {
             path: normalize_path(path)?,
             block_size,
@@ -52,6 +47,10 @@ impl Ext4FileBlockReaderConfig {
     pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
         self.source_identity = Some(source_identity.into());
         self
+    }
+
+    fn validate(&self) -> GibbloxResult<()> {
+        validate_block_size(self.block_size)
     }
 }
 
@@ -250,6 +249,7 @@ impl Ext4FileBlockReader {
         source: S,
         config: Ext4FileBlockReaderConfig,
     ) -> GibbloxResult<Self> {
+        config.validate()?;
         info!(path = %config.path, block_size = config.block_size, "constructing ext4-backed reader");
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
@@ -410,6 +410,16 @@ fn normalize_path(path: &str) -> GibbloxResult<String> {
         return Ok("/".to_string());
     }
     Ok(format!("/{inner}"))
+}
+
+fn validate_block_size(block_size: u32) -> GibbloxResult<()> {
+    if block_size == 0 || !block_size.is_power_of_two() {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            "block size must be non-zero power of two",
+        ));
+    }
+    Ok(())
 }
 
 fn map_ext4_err(op: &'static str) -> impl FnOnce(ext4_view_rs::Ext4Error) -> GibbloxError {

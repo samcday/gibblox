@@ -24,12 +24,7 @@ pub struct IsoFileBlockReaderConfig {
 
 impl IsoFileBlockReaderConfig {
     pub fn new(path: &str, block_size: u32) -> GibbloxResult<Self> {
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
+        validate_block_size(block_size)?;
 
         Ok(Self {
             path: normalize_identity_path(path)?,
@@ -41,6 +36,10 @@ impl IsoFileBlockReaderConfig {
     pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
         self.source_identity = Some(source_identity.into());
         self
+    }
+
+    fn validate(&self) -> GibbloxResult<()> {
+        validate_block_size(self.block_size)
     }
 }
 
@@ -81,6 +80,7 @@ impl IsoFileBlockReader {
         source: S,
         config: IsoFileBlockReaderConfig,
     ) -> GibbloxResult<Self> {
+        config.validate()?;
         info!(path = %config.path, block_size = config.block_size, "constructing ISO9660-backed reader");
 
         let source_block_size = source.block_size();
@@ -408,6 +408,17 @@ fn split_path(path: &str) -> GibbloxResult<Vec<String>> {
 fn normalize_identity_path(path: &str) -> GibbloxResult<String> {
     let parts = split_path(path)?;
     Ok(parts.join("/"))
+}
+
+fn validate_block_size(block_size: u32) -> GibbloxResult<()> {
+    if block_size == 0 || !block_size.is_power_of_two() {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            "block size must be non-zero power of two",
+        ));
+    }
+
+    Ok(())
 }
 
 fn parse_dir_record(raw: &[u8]) -> GibbloxResult<DirRecord> {
