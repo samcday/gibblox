@@ -27,13 +27,7 @@ Then open <http://localhost:4173>.
 From the workspace root:
 
 ```bash
-cargo run -p gibblox-pipeline-pump-web --example serve
-```
-
-Or from this directory:
-
-```bash
-cargo run --example serve
+cargo run --example browser-pump
 ```
 
 This starts a local HTTP server at <http://127.0.0.1:4173> and serves:
@@ -46,7 +40,7 @@ This starts a local HTTP server at <http://127.0.0.1:4173> and serves:
 You can override the preferred starting port with `GIBBLOX_PIPELINE_PUMP_PORT`, for example:
 
 ```bash
-GIBBLOX_PIPELINE_PUMP_PORT=5000 cargo run --example serve
+GIBBLOX_PIPELINE_PUMP_PORT=5000 cargo run --example browser-pump
 ```
 
 `/pipeline.bin` and `/noise.bin` support `seed` and `size` query params, for example:
@@ -58,5 +52,5 @@ Notes:
 
 - URL loading depends on browser CORS rules.
 - The worker script is `worker.js`, loaded as a module worker.
-- The `serve` example tries to run `wasm-pack build --target web --out-dir pkg` on startup.
+- The `browser-pump` example tries to run `wasm-pack build --target web --out-dir pkg` on startup.
 - This package is `publish = false`.
