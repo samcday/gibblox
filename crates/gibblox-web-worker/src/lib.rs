@@ -14,7 +14,7 @@ mod wasm {
     };
     use gibblox_core::{
         BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, GptBlockReader,
-        GptPartitionSelector, block_identity_string,
+        GptPartitionSelector,
     };
     use gibblox_http::{HttpBlockReader, HttpBlockReaderConfig};
     use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
@@ -44,14 +44,11 @@ mod wasm {
     const READY_CMD: &str = "ready";
     const ERROR_CMD: &str = "error";
     const OPEN_PIPELINE_CMD: &str = "open_pipeline";
-    const ATTACH_CMD: &str = "attach";
     const SHUTDOWN_CMD: &str = "shutdown";
 
     #[derive(Clone, Debug)]
     pub struct WorkerMetadata {
         pub protocol_version: u32,
-        pub size_bytes: u64,
-        pub identity: String,
     }
 
     pub struct OpenPipelineResult {
@@ -254,29 +251,6 @@ mod wasm {
             })
         }
 
-        #[deprecated(note = "use open_pipeline(pipeline_bytes) instead")]
-        pub async fn create_reader(&self) -> GibbloxResult<MessagePortBlockReaderClient> {
-            let channel = MessageChannel::new().map_err(js_io)?;
-            let request = Object::new();
-            set_prop(
-                &request,
-                "cmd",
-                JsValue::from_str(ATTACH_CMD),
-                "build attach request",
-            )?;
-            set_prop(
-                &request,
-                "port",
-                channel.port2().clone().into(),
-                "build attach request",
-            )?;
-
-            let transfer = Array::new();
-            transfer.push(channel.port2().as_ref());
-            self.request(request, Some(transfer)).await.map(|_| ())?;
-            MessagePortBlockReaderClient::connect(channel.port1()).await
-        }
-
         pub async fn shutdown(&self) -> GibbloxResult<()> {
             let request = Object::new();
             set_prop(
@@ -359,7 +333,6 @@ mod wasm {
     #[derive(Default)]
     struct WorkerState {
         readers: BTreeMap<String, Arc<dyn BlockReader>>,
-        default_reader: Option<Arc<dyn BlockReader>>,
         servers: Vec<MessagePortBlockReaderServer>,
     }
 
@@ -378,51 +351,11 @@ mod wasm {
     pub fn run_worker(scope: DedicatedWorkerGlobalScope) {
         info!("gibblox web worker mode: installing open_pipeline handler");
 
-        install_worker(scope, None);
+        install_worker(scope);
     }
 
-    #[deprecated(note = "use run_worker(scope) and open_pipeline RPC instead")]
-    pub fn start_worker(scope: DedicatedWorkerGlobalScope, reader: Arc<dyn BlockReader>) {
-        info!("gibblox web worker mode: installing legacy attach handler");
-
-        let identity = block_identity_string(reader.as_ref());
-        install_worker(scope.clone(), Some(reader.clone()));
-
-        spawn_local(async move {
-            match size_bytes_for_reader(reader).await {
-                Ok(size_bytes) => {
-                    if let Err(err) = post_ready_response(
-                        &scope,
-                        WORKER_PROTOCOL_VERSION,
-                        Some(size_bytes),
-                        Some(identity.as_str()),
-                    ) {
-                        error!(error = %err, "failed to post gibblox worker ready response");
-                    }
-                }
-                Err(err) => {
-                    if let Err(post_err) = post_error_response(&scope, &err.to_string()) {
-                        error!(
-                            error = %post_err,
-                            source_error = %err,
-                            "failed to post gibblox worker startup error"
-                        );
-                    }
-                }
-            }
-        });
-    }
-
-    fn install_worker(
-        scope: DedicatedWorkerGlobalScope,
-        default_reader: Option<Arc<dyn BlockReader>>,
-    ) {
-        let state = WorkerState {
-            default_reader,
-            ..WorkerState::default()
-        };
-
-        let state = Rc::new(RefCell::new(state));
+    fn install_worker(scope: DedicatedWorkerGlobalScope) {
+        let state = Rc::new(RefCell::new(WorkerState::default()));
         let scope_for_handler = scope.clone();
         let state_for_handler = Rc::clone(&state);
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
@@ -446,9 +379,7 @@ mod wasm {
         scope.set_onerror(Some(on_error.as_ref().unchecked_ref()));
         on_error.forget();
 
-        if state.borrow().default_reader.is_none()
-            && let Err(err) = post_ready_response(&scope, WORKER_PROTOCOL_VERSION, None, None)
-        {
+        if let Err(err) = post_ready_response(&scope, WORKER_PROTOCOL_VERSION) {
             error!(error = %err, "failed to post gibblox worker ready response");
         }
     }
@@ -477,12 +408,6 @@ mod wasm {
         match cmd.as_str() {
             OPEN_PIPELINE_CMD => {
                 if let Err(err) = handle_open_pipeline(scope, state, id, &data).await {
-                    post_rpc_error_response(scope, id, &err.to_string())?;
-                }
-                Ok(())
-            }
-            ATTACH_CMD => {
-                if let Err(err) = handle_attach(scope, state, id, event, &data) {
                     post_rpc_error_response(scope, id, &err.to_string())?;
                 }
                 Ok(())
@@ -554,26 +479,6 @@ mod wasm {
         state.borrow_mut().servers.push(server);
 
         Ok(())
-    }
-
-    fn handle_attach(
-        scope: &DedicatedWorkerGlobalScope,
-        state: &Rc<RefCell<WorkerState>>,
-        id: u32,
-        event: MessageEvent,
-        data: &JsValue,
-    ) -> GibbloxResult<()> {
-        let port = extract_port(&event, data, ATTACH_CMD)?;
-        let reader = state.borrow().default_reader.clone().ok_or_else(|| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::Unsupported,
-                "attach is unsupported in pipeline worker mode; use open_pipeline",
-            )
-        })?;
-
-        let server = MessagePortBlockReaderServer::serve(port, reader)?;
-        state.borrow_mut().servers.push(server);
-        post_rpc_ok_response(scope, id)
     }
 
     fn resolve_pipeline_source(
@@ -771,14 +676,8 @@ mod wasm {
     }
 
     fn parse_worker_metadata(data: &JsValue) -> GibbloxResult<WorkerMetadata> {
-        let protocol_version = prop_u32_opt(data, "protocol_version").unwrap_or_default();
-        let size_bytes = prop_u64_string_opt(data, "size_bytes").unwrap_or_default();
-        let identity = prop_string_opt(data, "identity").unwrap_or_default();
-
         Ok(WorkerMetadata {
-            protocol_version,
-            size_bytes,
-            identity,
+            protocol_version: prop_u32(data, "protocol_version")?,
         })
     }
 
@@ -810,8 +709,6 @@ mod wasm {
     fn post_ready_response(
         scope: &DedicatedWorkerGlobalScope,
         protocol_version: u32,
-        size_bytes: Option<u64>,
-        identity: Option<&str>,
     ) -> GibbloxResult<()> {
         let response = Object::new();
         set_prop(
@@ -825,42 +722,6 @@ mod wasm {
             "protocol_version",
             JsValue::from_f64(protocol_version as f64),
             "build worker ready response",
-        )?;
-
-        if let Some(size_bytes) = size_bytes {
-            set_prop(
-                &response,
-                "size_bytes",
-                JsValue::from_str(size_bytes.to_string().as_str()),
-                "build worker ready response",
-            )?;
-        }
-
-        if let Some(identity) = identity {
-            set_prop(
-                &response,
-                "identity",
-                JsValue::from_str(identity),
-                "build worker ready response",
-            )?;
-        }
-
-        scope.post_message(&response.into()).map_err(js_io)
-    }
-
-    fn post_error_response(scope: &DedicatedWorkerGlobalScope, message: &str) -> GibbloxResult<()> {
-        let response = Object::new();
-        set_prop(
-            &response,
-            "cmd",
-            JsValue::from_str(ERROR_CMD),
-            "build worker error response",
-        )?;
-        set_prop(
-            &response,
-            "error",
-            JsValue::from_str(message),
-            "build worker error response",
         )?;
         scope.post_message(&response.into()).map_err(js_io)
     }
@@ -978,12 +839,6 @@ mod wasm {
             })
     }
 
-    fn prop_string_opt(target: &JsValue, key: &str) -> Option<String> {
-        Reflect::get(target, &JsValue::from_str(key))
-            .ok()
-            .and_then(|value| value.as_string())
-    }
-
     fn prop_u32(target: &JsValue, key: &str) -> GibbloxResult<u32> {
         let value = Reflect::get(target, &JsValue::from_str(key)).map_err(js_io)?;
         parse_u32_value(&value).ok_or_else(|| {
@@ -1034,10 +889,6 @@ mod wasm {
         })
     }
 
-    fn prop_u64_string_opt(target: &JsValue, key: &str) -> Option<u64> {
-        prop_string_opt(target, key).and_then(|value| value.parse::<u64>().ok())
-    }
-
     fn prop_message_port(target: &JsValue, key: &str) -> GibbloxResult<MessagePort> {
         Reflect::get(target, &JsValue::from_str(key))
             .map_err(js_io)?
@@ -1064,28 +915,6 @@ mod wasm {
             GibbloxErrorKind::InvalidInput,
             format!("field {key} is missing or not a byte array"),
         ))
-    }
-
-    fn extract_port(event: &MessageEvent, data: &JsValue, cmd: &str) -> GibbloxResult<MessagePort> {
-        let ports = event.ports();
-        if ports.length() != 0 {
-            return ports.get(0).dyn_into::<MessagePort>().map_err(|_| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::InvalidInput,
-                    format!("{cmd} transfer[0] is not MessagePort"),
-                )
-            });
-        }
-
-        Reflect::get(data, &JsValue::from_str("port"))
-            .map_err(js_io)?
-            .dyn_into::<MessagePort>()
-            .map_err(|_| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::InvalidInput,
-                    format!("{cmd} command missing MessagePort transfer"),
-                )
-            })
     }
 
     fn js_io(err: JsValue) -> GibbloxError {
