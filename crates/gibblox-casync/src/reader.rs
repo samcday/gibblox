@@ -1,20 +1,24 @@
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use async_trait::async_trait;
 use core::{
     fmt,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use gibblox_core::{
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext,
+};
 use sha2::{Digest, Sha256, Sha512_256};
 use tracing::{debug, trace};
 
 use crate::index::{CasyncChunkId, CasyncIndex, CasyncIndexValidation};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CasyncReaderConfig {
     pub block_size: u32,
     pub strict_verify: bool,
+    pub identity: Option<String>,
 }
 
 impl Default for CasyncReaderConfig {
@@ -22,7 +26,28 @@ impl Default for CasyncReaderConfig {
         Self {
             block_size: 4096,
             strict_verify: false,
+            identity: None,
         }
+    }
+}
+
+impl CasyncReaderConfig {
+    pub fn with_identity(mut self, identity: impl Into<String>) -> Self {
+        self.identity = Some(identity.into());
+        self
+    }
+}
+
+impl BlockReaderConfigIdentity for CasyncReaderConfig {
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        if let Some(identity) = self.identity.as_deref() {
+            return out.write_str(identity);
+        }
+        write!(
+            out,
+            "casync-config:block_size={}:strict_verify={}",
+            self.block_size, self.strict_verify
+        )
     }
 }
 
@@ -62,6 +87,7 @@ pub struct CasyncBlockReader<S> {
     config: CasyncReaderConfig,
     total_blocks: u64,
     index_digest: CasyncChunkId,
+    identity: String,
     chunks_verified: AtomicU64,
 }
 
@@ -96,6 +122,14 @@ where
         let digest = digest_sha256(&index_bytes);
         let index_digest = CasyncChunkId::from_bytes(digest);
         let total_blocks = index.blob_size().div_ceil(config.block_size as u64);
+        let identity = config.identity.clone().unwrap_or_else(|| {
+            format!(
+                "casync:index={}:chunk_count={}:blob_size={}",
+                index_digest,
+                index.total_chunks(),
+                index.blob_size()
+            )
+        });
 
         debug!(
             index_bytes = index_bytes.len(),
@@ -112,6 +146,7 @@ where
             config,
             total_blocks,
             index_digest,
+            identity,
             chunks_verified: AtomicU64::new(0),
         })
     }
@@ -242,13 +277,7 @@ where
     }
 
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
-        write!(
-            out,
-            "casync:index={}:chunk_count={}:blob_size={}",
-            self.index_digest,
-            self.index.total_chunks(),
-            self.index.blob_size()
-        )
+        out.write_str(&self.identity)
     }
 
     async fn read_blocks(
@@ -487,6 +516,7 @@ mod tests {
             CasyncReaderConfig {
                 block_size: 4,
                 strict_verify: true,
+                identity: None,
             },
         )
         .await
@@ -514,6 +544,7 @@ mod tests {
             CasyncReaderConfig {
                 block_size: 4,
                 strict_verify: true,
+                identity: None,
             },
         )
         .await
@@ -547,6 +578,7 @@ mod tests {
             CasyncReaderConfig {
                 block_size: 4,
                 strict_verify: true,
+                identity: None,
             },
         )
         .await
@@ -573,6 +605,7 @@ mod tests {
             CasyncReaderConfig {
                 block_size: 4,
                 strict_verify: true,
+                identity: None,
             },
         )
         .await

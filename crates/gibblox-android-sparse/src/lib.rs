@@ -5,10 +5,13 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-use alloc::{boxed::Box, format, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use async_trait::async_trait;
 use core::fmt;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use gibblox_core::{
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext,
+};
 use tracing::{debug, trace};
 
 const SPARSE_HEADER_MAGIC: u32 = 0xed26_ff3a;
@@ -20,6 +23,30 @@ const CHUNK_TYPE_RAW: u16 = 0xCAC1;
 const CHUNK_TYPE_FILL: u16 = 0xCAC2;
 const CHUNK_TYPE_DONT_CARE: u16 = 0xCAC3;
 const CHUNK_TYPE_CRC32: u16 = 0xCAC4;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AndroidSparseBlockReaderConfig {
+    pub source_identity: Option<String>,
+}
+
+impl AndroidSparseBlockReaderConfig {
+    pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
+        self.source_identity = Some(source_identity.into());
+        self
+    }
+}
+
+impl BlockReaderConfigIdentity for AndroidSparseBlockReaderConfig {
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        out.write_str("android-sparse:(")?;
+        out.write_str(
+            self.source_identity
+                .as_deref()
+                .unwrap_or("<unknown-source>"),
+        )?;
+        out.write_str(")")
+    }
+}
 
 /// Read-only block reader over Android sparse image streams.
 ///
@@ -35,6 +62,7 @@ pub struct AndroidSparseBlockReader<S> {
     declared_chunks: u32,
     image_checksum: u32,
     chunks: Vec<SparseChunk>,
+    config: AndroidSparseBlockReaderConfig,
 }
 
 impl<S> AndroidSparseBlockReader<S>
@@ -43,6 +71,13 @@ where
 {
     /// Parse and validate an Android sparse stream exposed by `source`.
     pub async fn new(source: S) -> GibbloxResult<Self> {
+        Self::new_with_config(source, AndroidSparseBlockReaderConfig::default()).await
+    }
+
+    pub async fn new_with_config(
+        source: S,
+        config: AndroidSparseBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
         let source_block_size_u32 = source.block_size();
         if source_block_size_u32 == 0 || !source_block_size_u32.is_power_of_two() {
             return Err(GibbloxError::with_message(
@@ -294,6 +329,12 @@ where
             ));
         }
 
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| gibblox_core::block_identity_string(&source));
+        let config = config.with_source_identity(source_identity);
+
         debug!(
             source_block_size = source_block_size_u32,
             source_total_blocks,
@@ -314,11 +355,24 @@ where
             declared_chunks: sparse_header.total_chunks,
             image_checksum: sparse_header.image_checksum,
             chunks,
+            config,
         })
     }
 
     pub fn expanded_size_bytes(&self) -> u64 {
         self.expanded_size_bytes
+    }
+
+    pub fn declared_chunks(&self) -> u32 {
+        self.declared_chunks
+    }
+
+    pub fn image_checksum(&self) -> u32 {
+        self.image_checksum
+    }
+
+    pub fn config(&self) -> &AndroidSparseBlockReaderConfig {
+        &self.config
     }
 
     fn chunk_index_for_offset(&self, offset: u64) -> Option<usize> {
@@ -347,13 +401,7 @@ where
     }
 
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
-        out.write_str("android-sparse:(")?;
-        self.source.write_identity(out)?;
-        write!(
-            out,
-            "):blk_sz={}:total_blks={}:total_chunks={}:checksum={:08x}",
-            self.block_size, self.total_blocks, self.declared_chunks, self.image_checksum
-        )
+        self.config.write_identity(out)
     }
 
     async fn read_blocks(
