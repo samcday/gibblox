@@ -5,7 +5,8 @@ extern crate alloc;
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use gibblox_core::{
-    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+    BlockReader, BlockReaderConfigIdentity, ByteRangeReader, GibbloxError, GibbloxErrorKind,
+    GibbloxResult, ReadContext,
 };
 use tracing::{info, trace};
 
@@ -14,14 +15,56 @@ const PVD_SECTOR: u64 = 16;
 const VD_MAGIC: &[u8; 5] = b"CD001";
 const VD_VERSION: u8 = 1;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IsoFileBlockReaderConfig {
+    pub path: String,
+    pub block_size: u32,
+    pub source_identity: Option<String>,
+}
+
+impl IsoFileBlockReaderConfig {
+    pub fn new(path: &str, block_size: u32) -> GibbloxResult<Self> {
+        if block_size == 0 || !block_size.is_power_of_two() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero power of two",
+            ));
+        }
+
+        Ok(Self {
+            path: normalize_identity_path(path)?,
+            block_size,
+            source_identity: None,
+        })
+    }
+
+    pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
+        self.source_identity = Some(source_identity.into());
+        self
+    }
+}
+
+impl BlockReaderConfigIdentity for IsoFileBlockReaderConfig {
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        out.write_str("iso-file:(")?;
+        out.write_str(
+            self.source_identity
+                .as_deref()
+                .unwrap_or("<unknown-source>"),
+        )?;
+        write!(out, "):path=len:{}:", self.path.len())?;
+        out.write_str(self.path.as_str())?;
+        write!(out, ":block_size={}", self.block_size)
+    }
+}
+
 /// File-backed block reader sourced from a file inside an ISO9660 image.
 pub struct IsoFileBlockReader {
     block_size: u32,
     file_size_bytes: u64,
-    file_path: String,
     file_offset_bytes: u64,
-    source: Arc<dyn BlockReader>,
     byte_reader: ByteRangeReader,
+    config: IsoFileBlockReaderConfig,
 }
 
 impl IsoFileBlockReader {
@@ -31,13 +74,14 @@ impl IsoFileBlockReader {
         path: &str,
         block_size: u32,
     ) -> GibbloxResult<Self> {
-        info!(path, block_size, "constructing ISO9660-backed reader");
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
+        Self::open_with_config(source, IsoFileBlockReaderConfig::new(path, block_size)?).await
+    }
+
+    pub async fn open_with_config<S: BlockReader + 'static>(
+        source: S,
+        config: IsoFileBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
+        info!(path = %config.path, block_size = config.block_size, "constructing ISO9660-backed reader");
 
         let source_block_size = source.block_size();
         if source_block_size == 0 || !source_block_size.is_power_of_two() {
@@ -55,6 +99,11 @@ impl IsoFileBlockReader {
             })?;
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| gibblox_core::block_identity_string(source.as_ref()));
+        let config = config.with_source_identity(source_identity);
         let byte_reader = ByteRangeReader::new(
             Arc::clone(&source),
             source_block_size as usize,
@@ -99,8 +148,13 @@ impl IsoFileBlockReader {
             ));
         }
 
-        let identity_path = normalize_identity_path(path)?;
-        let target = resolve_path(&byte_reader, logical_block_size, &root, path).await?;
+        let target = resolve_path(
+            &byte_reader,
+            logical_block_size,
+            &root,
+            config.path.as_str(),
+        )
+        .await?;
         if target.is_dir() {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -132,15 +186,18 @@ impl IsoFileBlockReader {
             ));
         }
 
-        info!(path, file_size_bytes, "resolved file inode from ISO9660");
+        info!(path = %config.path, file_size_bytes, "resolved file inode from ISO9660");
         Ok(Self {
-            block_size,
+            block_size: config.block_size,
             file_size_bytes,
-            file_path: identity_path,
             file_offset_bytes,
-            source,
             byte_reader,
+            config,
         })
+    }
+
+    pub fn config(&self) -> &IsoFileBlockReaderConfig {
+        &self.config
     }
 
     pub fn file_size_bytes(&self) -> u64 {
@@ -159,9 +216,7 @@ impl BlockReader for IsoFileBlockReader {
     }
 
     fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        out.write_str("iso-file:(")?;
-        self.source.write_identity(out)?;
-        write!(out, "):{}", self.file_path)
+        self.config.write_identity(out)
     }
 
     async fn read_blocks(
