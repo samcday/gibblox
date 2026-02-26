@@ -7,13 +7,17 @@ license = { workspace = true }
 repository = { workspace = true }
 description = "CLI for reading and composing gibblox block pipelines."
 
+[[bin]]
+name = "gibblox"
+path = "src/main.rs"
+
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }.tar.gz"
+pkg-url = "{ repo }/releases/download/{ version }/{ bin }-{ target }.tar.gz"
 pkg-fmt = "tgz"
 bin-dir = "{ bin }{ binary-ext }"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
-pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }.zip"
+pkg-url = "{ repo }/releases/download/{ version }/{ bin }-{ target }.zip"
 pkg-fmt = "zip"
 
 [dependencies]
