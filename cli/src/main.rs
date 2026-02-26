@@ -19,8 +19,8 @@ use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_pipeline::{
-    PipelineSource, decode_pipeline, encode_pipeline, pipeline_bin_header_version,
-    validate_pipeline,
+    PipelineSource, PipelineSourceCasyncSource, decode_pipeline, encode_pipeline,
+    pipeline_bin_header_version, pipeline_identity_string, validate_pipeline,
 };
 use gibblox_xz::XzBlockReader;
 use url::Url;
@@ -308,6 +308,11 @@ async fn open_casync_source(
         CasyncReaderConfig {
             block_size: DEFAULT_IMAGE_BLOCK_SIZE,
             strict_verify: false,
+            identity: Some(pipeline_identity_string(&PipelineSource::Casync(
+                PipelineSourceCasyncSource {
+                    casync: source.clone(),
+                },
+            ))),
         },
     )
     .await

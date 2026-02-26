@@ -5,7 +5,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec};
 use async_lock::Mutex;
 use async_trait::async_trait;
 use core::{
@@ -13,7 +13,10 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use crc32fast::Hasher;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use gibblox_core::{
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext,
+};
 use tracing::{debug, trace};
 use xz4rust::{DICT_SIZE_MAX, DICT_SIZE_MIN, XzDecoder, XzNextBlockResult};
 
@@ -37,6 +40,44 @@ impl Default for XzReaderConfig {
             decoded_block_cache_entries: DEFAULT_DECODED_CACHE_ENTRIES,
             footer_scan_window_bytes: DEFAULT_FOOTER_SCAN_WINDOW_BYTES,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct XzBlockReaderConfig {
+    pub reader: XzReaderConfig,
+    pub source_identity: Option<String>,
+}
+
+impl Default for XzBlockReaderConfig {
+    fn default() -> Self {
+        Self {
+            reader: XzReaderConfig::default(),
+            source_identity: None,
+        }
+    }
+}
+
+impl XzBlockReaderConfig {
+    pub fn with_source_identity(mut self, source_identity: impl Into<String>) -> Self {
+        self.source_identity = Some(source_identity.into());
+        self
+    }
+}
+
+impl BlockReaderConfigIdentity for XzBlockReaderConfig {
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        out.write_str("xz:(")?;
+        out.write_str(
+            self.source_identity
+                .as_deref()
+                .unwrap_or("<unknown-source>"),
+        )?;
+        write!(
+            out,
+            "):decoded_cache_entries={}:footer_scan_window_bytes={}",
+            self.reader.decoded_block_cache_entries, self.reader.footer_scan_window_bytes
+        )
     }
 }
 
@@ -135,28 +176,49 @@ pub struct XzBlockReader {
     stream_header: [u8; XZ_HEADER_LEN],
     stream_flags: [u8; 2],
     blocks: Vec<XzIndexedBlock>,
-    source: Arc<dyn BlockReader>,
     byte_reader: ByteReader,
     config: XzReaderConfig,
+    identity_config: XzBlockReaderConfig,
     decoded_cache: Mutex<DecodedCacheState>,
     decoded_blocks: AtomicU64,
 }
 
 impl XzBlockReader {
     pub async fn new(source: Arc<dyn BlockReader>) -> GibbloxResult<Self> {
-        Self::new_with_config(source, XzReaderConfig::default()).await
+        Self::open_with_block_config(source, XzBlockReaderConfig::default()).await
     }
 
     pub async fn new_with_config(
         source: Arc<dyn BlockReader>,
         config: XzReaderConfig,
     ) -> GibbloxResult<Self> {
-        if config.footer_scan_window_bytes < XZ_FOOTER_LEN {
+        Self::open_with_block_config(
+            source,
+            XzBlockReaderConfig {
+                reader: config,
+                source_identity: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn open_with_block_config(
+        source: Arc<dyn BlockReader>,
+        config: XzBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
+        if config.reader.footer_scan_window_bytes < XZ_FOOTER_LEN {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 "footer scan window must be at least 12 bytes",
             ));
         }
+
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| gibblox_core::block_identity_string(source.as_ref()));
+        let identity_config = config.with_source_identity(source_identity);
+        let config = identity_config.reader;
 
         let block_size = source.block_size();
         if block_size == 0 || !block_size.is_power_of_two() {
@@ -265,9 +327,9 @@ impl XzBlockReader {
             stream_header,
             stream_flags,
             blocks,
-            source,
             byte_reader,
             config,
+            identity_config,
             decoded_cache: Mutex::new(DecodedCacheState::new()),
             decoded_blocks: AtomicU64::new(0),
         })
@@ -448,15 +510,7 @@ impl BlockReader for XzBlockReader {
     }
 
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
-        out.write_str("xz:(")?;
-        self.source.write_identity(out)?;
-        write!(
-            out,
-            "):compressed={}:uncompressed={}:xz_blocks={}",
-            self.compressed_size_bytes,
-            self.uncompressed_size_bytes,
-            self.blocks.len()
-        )
+        self.identity_config.write_identity(out)
     }
 
     async fn read_blocks(
