@@ -9,11 +9,13 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use async_trait::async_trait;
 use core::{fmt, hash::Hasher};
 
+mod aligned_block;
 mod byte_range;
 mod gpt;
 mod lru;
 mod paged;
 
+pub use aligned_block::AlignedBlockReader;
 pub use byte_range::AlignedByteReader;
 pub use byte_range::AlignedByteReader as ByteRangeReader;
 pub use gpt::{GptBlockReader, GptPartitionSelector};
