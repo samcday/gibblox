@@ -138,7 +138,7 @@ impl ByteReader for FileReader {
         }
 
         let read_len = (buf.len() as u64).min(self.size_bytes - offset) as usize;
-        let read = read_file_at(&self.file, &mut buf[..read_len], offset)
+        let read = read_file_at_full(&self.file, &mut buf[..read_len], offset)
             .map_err(map_io_err("read file"))?;
 
         trace!(
@@ -193,6 +193,55 @@ fn validate_block_size(block_size: u32) -> GibbloxResult<()> {
     Ok(())
 }
 
+fn read_file_at_full(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    read_at_full(buf, offset, |chunk, chunk_offset| {
+        read_file_at(file, chunk, chunk_offset)
+    })
+}
+
+fn read_at_full<F>(buf: &mut [u8], offset: u64, mut read_at: F) -> std::io::Result<usize>
+where
+    F: FnMut(&mut [u8], u64) -> std::io::Result<usize>,
+{
+    if buf.is_empty() {
+        return Ok(0);
+    }
+
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        let chunk_offset = offset.checked_add(filled as u64).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "file read offset overflow",
+            )
+        })?;
+        let remaining = buf.len() - filled;
+        let read = read_at(&mut buf[filled..], chunk_offset)?;
+        if read > remaining {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("file read returned too many bytes: {read} > {remaining}"),
+            ));
+        }
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "short file read: expected {} bytes, got {filled}",
+                    buf.len()
+                ),
+            ));
+        }
+        filled = filled.checked_add(read).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "file read length overflow",
+            )
+        })?;
+    }
+    Ok(filled)
+}
+
 #[cfg(target_family = "unix")]
 fn read_file_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
     file.read_at(buf, offset)
@@ -212,4 +261,44 @@ fn read_file_at(_file: &File, _buf: &mut [u8], _offset: u64) -> std::io::Result<
 
 fn map_io_err(op: &'static str) -> impl FnOnce(std::io::Error) -> GibbloxError {
     move |err| GibbloxError::with_message(GibbloxErrorKind::Io, format!("{op}: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_at_full;
+
+    #[test]
+    fn read_at_full_retries_short_reads() {
+        let source = b"abcdefghijklmnopqrstuvwxyz";
+        let mut out = [0u8; 12];
+
+        let read = read_at_full(&mut out, 5, |buf, offset| {
+            let start = offset as usize;
+            let chunk = 3usize.min(buf.len());
+            let end = start + chunk;
+            buf[..chunk].copy_from_slice(&source[start..end]);
+            Ok(chunk)
+        })
+        .expect("short reads should be retried until complete");
+
+        assert_eq!(read, out.len());
+        assert_eq!(&out, b"fghijklmnopq");
+    }
+
+    #[test]
+    fn read_at_full_errors_when_progress_stalls() {
+        let mut out = [0u8; 8];
+        let mut calls = 0usize;
+
+        let err = read_at_full(&mut out, 0, |_buf, _offset| {
+            calls += 1;
+            if calls == 1 {
+                return Ok(3);
+            }
+            Ok(0)
+        })
+        .expect_err("zero-length follow-up read should fail");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
 }
