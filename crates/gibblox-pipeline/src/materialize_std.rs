@@ -72,13 +72,13 @@ fn open_pipeline_source<'a>(
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
                 let config = HttpReaderConfig::new(url.clone(), opts.image_block_size);
-                let reader = HttpReader::open(config.clone())
+                let reader = HttpReader::open(config)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
                 let reader = BlockByteReader::new(reader, opts.image_block_size)
                     .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
                 let reader: DynBlockReader = Arc::new(reader);
-                maybe_wrap_head_http_cache(reader, &config, opts).await
+                maybe_wrap_head_cache(reader, opts, "http").await
             }
             PipelineSource::File(source) => {
                 let value = source.file.trim();
@@ -88,9 +88,13 @@ fn open_pipeline_source<'a>(
 
                 let reader = FileReader::open(value, opts.image_block_size)
                     .map_err(|err| anyhow!("open file source {value}: {err}"))?;
-                Ok(Arc::new(reader) as DynBlockReader)
+                let reader: DynBlockReader = Arc::new(reader);
+                maybe_wrap_head_cache(reader, opts, "file").await
             }
-            PipelineSource::Casync(source) => open_casync_source(&source.casync, opts).await,
+            PipelineSource::Casync(source) => {
+                let reader = open_casync_source(&source.casync, opts).await?;
+                maybe_wrap_head_cache(reader, opts, "casync").await
+            }
             PipelineSource::Xz(source) => {
                 let upstream = open_pipeline_byte_source(source.xz.as_ref(), opts).await?;
                 let xz_reader = XzBlockReader::new_from_byte_reader(upstream)
@@ -161,6 +165,20 @@ fn open_pipeline_byte_source<'a>(
                 let reader = HttpReader::new(url.clone(), opts.image_block_size)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
+
+                if opts.cache_policy == PipelineCachePolicy::Head {
+                    let block_reader = BlockByteReader::new(reader, opts.image_block_size)
+                        .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
+                    let block_reader: DynBlockReader = Arc::new(block_reader);
+                    let block_reader =
+                        maybe_wrap_head_cache(block_reader, opts, "http-byte").await?;
+                    let byte_reader =
+                        AlignedByteReader::new(block_reader).await.map_err(|err| {
+                            anyhow!("open aligned byte view for HTTP source {url}: {err}")
+                        })?;
+                    return Ok(Arc::new(byte_reader) as DynByteReader);
+                }
+
                 Ok(Arc::new(reader) as DynByteReader)
             }
             PipelineSource::File(source) => {
@@ -171,6 +189,18 @@ fn open_pipeline_byte_source<'a>(
 
                 let reader = FileReader::open(value, opts.image_block_size)
                     .map_err(|err| anyhow!("open file source {value}: {err}"))?;
+
+                if opts.cache_policy == PipelineCachePolicy::Head {
+                    let block_reader: DynBlockReader = Arc::new(reader);
+                    let block_reader =
+                        maybe_wrap_head_cache(block_reader, opts, "file-byte").await?;
+                    let byte_reader =
+                        AlignedByteReader::new(block_reader).await.map_err(|err| {
+                            anyhow!("open aligned byte view for file source {value}: {err}")
+                        })?;
+                    return Ok(Arc::new(byte_reader) as DynByteReader);
+                }
+
                 Ok(Arc::new(reader) as DynByteReader)
             }
             PipelineSource::Xz(source) => {
@@ -191,19 +221,23 @@ fn open_pipeline_byte_source<'a>(
     })
 }
 
-async fn maybe_wrap_head_http_cache(
+async fn maybe_wrap_head_cache(
     reader: DynBlockReader,
-    config: &HttpReaderConfig,
     opts: &OpenPipelineOptions,
+    stage: &str,
 ) -> Result<DynBlockReader> {
     if opts.cache_policy != PipelineCachePolicy::Head {
         return Ok(reader);
     }
 
-    let cache = match StdCacheOps::open_default_for_config(config) {
+    let cache = match StdCacheOps::open_default_for_reader(&reader).await {
         Ok(cache) => cache,
         Err(err) => {
-            warn!(error = %err, "failed to open std cache for HTTP source, using uncached reader");
+            warn!(
+                stage,
+                error = %err,
+                "failed to open std cache for head stage, using uncached reader"
+            );
             return Ok(reader);
         }
     };
@@ -211,7 +245,11 @@ async fn maybe_wrap_head_http_cache(
     match CachedBlockReader::new(Arc::clone(&reader), cache).await {
         Ok(cached) => Ok(Arc::new(cached)),
         Err(err) => {
-            warn!(error = %err, "failed to initialize cached HTTP reader, using uncached reader");
+            warn!(
+                stage,
+                error = %err,
+                "failed to initialize cached head-stage reader, using uncached reader"
+            );
             Ok(reader)
         }
     }
