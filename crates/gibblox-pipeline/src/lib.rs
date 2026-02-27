@@ -111,8 +111,9 @@ pub fn pipeline_identity_id(source: &PipelineSource) -> u32 {
     derive_config_identity_id(source)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PipelineCachePolicy {
+    #[default]
     None,
     Head,
     Tail,
@@ -131,12 +132,6 @@ impl PipelineCachePolicy {
 impl fmt::Display for PipelineCachePolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-impl Default for PipelineCachePolicy {
-    fn default() -> Self {
-        Self::None
     }
 }
 
