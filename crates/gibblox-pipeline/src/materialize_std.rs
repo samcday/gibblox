@@ -11,9 +11,9 @@ use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
-use gibblox_core::{BlockReader, GptBlockReader, GptPartitionSelector};
-use gibblox_file::StdFileBlockReader;
-use gibblox_http::HttpBlockReader;
+use gibblox_core::{BlockByteReader, BlockReader, GptBlockReader, GptPartitionSelector};
+use gibblox_file::FileReader;
+use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_xz::XzBlockReader;
 use url::Url;
@@ -59,9 +59,11 @@ fn open_pipeline_source<'a>(
 
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
-                let reader = HttpBlockReader::new(url.clone(), opts.image_block_size)
+                let reader = HttpReader::new(url.clone(), opts.image_block_size)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
+                let reader = BlockByteReader::new(reader, opts.image_block_size)
+                    .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::File(source) => {
@@ -70,7 +72,7 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline file source is empty");
                 }
 
-                let reader = StdFileBlockReader::open(value, opts.image_block_size)
+                let reader = FileReader::open(value, opts.image_block_size)
                     .map_err(|err| anyhow!("open file source {value}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
