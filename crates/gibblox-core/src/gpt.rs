@@ -6,8 +6,8 @@ use core::fmt;
 use tracing::{info, trace};
 
 use crate::{
-    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
-    ReadContext,
+    AlignedBlockReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
+    GibbloxResult, ReadContext,
 };
 
 const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
@@ -99,9 +99,7 @@ pub struct GptBlockReader {
     partition_size_bytes: u64,
     partition_index: u32,
     partition_partuuid: String,
-    source: Arc<dyn BlockReader>,
-    source_block_size: usize,
-    source_size_bytes: u64,
+    source_reader: AlignedBlockReader<Arc<dyn BlockReader>>,
     partition_offset_bytes: u64,
     config: GptBlockReaderConfig,
 }
@@ -149,15 +147,11 @@ impl GptBlockReader {
             .clone()
             .unwrap_or_else(|| crate::block_identity_string(source.as_ref()));
         let config = config.with_source_identity(source_identity);
-        let byte_reader = SourceByteReader {
-            inner: Arc::clone(&source),
-            block_size: source_block_size as usize,
-            size_bytes: source_size_bytes,
-        };
+        let source_reader = AlignedBlockReader::new(Arc::clone(&source), 1).await?;
 
         let mut header_block = vec![0u8; source_block_size as usize];
-        byte_reader
-            .read_exact_at(
+        source_reader
+            .read_blocks(
                 source_block_size as u64,
                 &mut header_block,
                 ReadContext::FOREGROUND,
@@ -216,8 +210,8 @@ impl GptBlockReader {
             )
         })?;
         let mut partition_table = vec![0u8; table_len];
-        byte_reader
-            .read_exact_at(
+        source_reader
+            .read_blocks(
                 partition_table_offset,
                 &mut partition_table,
                 ReadContext::FOREGROUND,
@@ -275,9 +269,7 @@ impl GptBlockReader {
             partition_size_bytes,
             partition_index: selected.index,
             partition_partuuid,
-            source,
-            source_block_size: source_block_size as usize,
-            source_size_bytes,
+            source_reader,
             partition_offset_bytes,
             config,
         })
@@ -347,12 +339,6 @@ impl BlockReader for GptBlockReader {
             .ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
             })?;
-        let byte_reader = SourceByteReader {
-            inner: Arc::clone(&self.source),
-            block_size: self.source_block_size,
-            size_bytes: self.source_size_bytes,
-        };
-
         trace!(
             lba,
             offset,
@@ -360,8 +346,8 @@ impl BlockReader for GptBlockReader {
             read_len,
             "reading partition blocks from GPT"
         );
-        byte_reader
-            .read_exact_at(source_offset, &mut buf[..read_len], ctx)
+        self.source_reader
+            .read_blocks(source_offset, &mut buf[..read_len], ctx)
             .await?;
         if read_len < buf.len() {
             buf[read_len..].fill(0);
@@ -794,101 +780,6 @@ fn read_u64_le(raw: &[u8], start: usize) -> GibbloxResult<u64> {
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(data);
     Ok(u64::from_le_bytes(bytes))
-}
-
-#[derive(Clone)]
-struct SourceByteReader {
-    inner: Arc<dyn BlockReader>,
-    block_size: usize,
-    size_bytes: u64,
-}
-
-impl SourceByteReader {
-    async fn read_exact_at(
-        &self,
-        offset: u64,
-        out: &mut [u8],
-        ctx: ReadContext,
-    ) -> GibbloxResult<()> {
-        if out.is_empty() {
-            return Ok(());
-        }
-        let end = offset.checked_add(out.len() as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range overflow")
-        })?;
-        if end > self.size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "read range exceeds source size",
-            ));
-        }
-
-        let bs = self.block_size as u64;
-        let aligned_start = (offset / bs) * bs;
-        let aligned_end = end.div_ceil(bs) * bs;
-        let aligned_len = usize::try_from(aligned_end - aligned_start).map_err(|_| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "aligned read length exceeds addressable memory",
-            )
-        })?;
-
-        let mut scratch = vec![0u8; aligned_len];
-        let mut filled = 0usize;
-        while filled < scratch.len() {
-            let filled_u64 = u64::try_from(filled).map_err(|_| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "aligned read offset exceeds u64 range",
-                )
-            })?;
-            let read_offset = aligned_start.checked_add(filled_u64).ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "aligned read offset overflow",
-                )
-            })?;
-            let lba = read_offset / bs;
-            let read = self
-                .inner
-                .read_blocks(lba, &mut scratch[filled..], ctx)
-                .await?;
-            if read == 0 {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "unexpected EOF while servicing aligned read",
-                ));
-            }
-            let remaining = scratch.len() - filled;
-            if read > remaining {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "block source returned more bytes than requested",
-                ));
-            }
-            if read % self.block_size != 0 && read < remaining {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "unaligned short read from block source",
-                ));
-            }
-            filled = filled.checked_add(read).ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "aligned read progress overflow",
-                )
-            })?;
-        }
-
-        let head = usize::try_from(offset - aligned_start).map_err(|_| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "aligned read head offset exceeds addressable memory",
-            )
-        })?;
-        out.copy_from_slice(&scratch[head..head + out.len()]);
-        Ok(())
-    }
 }
 
 #[cfg(test)]
