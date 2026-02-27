@@ -6,8 +6,8 @@ use core::fmt;
 use tracing::{info, trace};
 
 use crate::{
-    AlignedBlockReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
-    GibbloxResult, ReadContext,
+    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    ReadContext, WindowBlockReader,
 };
 
 const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
@@ -95,12 +95,10 @@ impl BlockReaderConfigIdentity for GptBlockReaderConfig {
 }
 
 pub struct GptBlockReader {
-    block_size: u32,
     partition_size_bytes: u64,
     partition_index: u32,
     partition_partuuid: String,
-    source_reader: AlignedBlockReader<Arc<dyn BlockReader>>,
-    partition_offset_bytes: u64,
+    partition_reader: WindowBlockReader<Arc<dyn BlockReader>>,
     config: GptBlockReaderConfig,
 }
 
@@ -147,16 +145,15 @@ impl GptBlockReader {
             .clone()
             .unwrap_or_else(|| crate::block_identity_string(source.as_ref()));
         let config = config.with_source_identity(source_identity);
-        let source_reader = AlignedBlockReader::new(Arc::clone(&source), 1).await?;
 
         let mut header_block = vec![0u8; source_block_size as usize];
-        source_reader
-            .read_blocks(
-                source_block_size as u64,
-                &mut header_block,
-                ReadContext::FOREGROUND,
-            )
-            .await?;
+        read_source_blocks_exact(
+            source.as_ref(),
+            1,
+            &mut header_block,
+            ReadContext::FOREGROUND,
+        )
+        .await?;
         let header = parse_gpt_header(&header_block, source_total_blocks)?;
 
         let partition_table_offset = header
@@ -209,14 +206,30 @@ impl GptBlockReader {
                 "partition table size exceeds addressable memory",
             )
         })?;
-        let mut partition_table = vec![0u8; table_len];
-        source_reader
-            .read_blocks(
-                partition_table_offset,
-                &mut partition_table,
-                ReadContext::FOREGROUND,
+        let table_read_bytes = partition_table_bytes
+            .div_ceil(source_block_size as u64)
+            .checked_mul(source_block_size as u64)
+            .ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "partition table read size overflow",
+                )
+            })?;
+        let table_read_len = usize::try_from(table_read_bytes).map_err(|_| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "partition table read exceeds addressable memory",
             )
-            .await?;
+        })?;
+        let mut partition_table_raw = vec![0u8; table_read_len];
+        read_source_blocks_exact(
+            source.as_ref(),
+            header.partition_entries_lba,
+            &mut partition_table_raw,
+            ReadContext::FOREGROUND,
+        )
+        .await?;
+        let partition_table = &partition_table_raw[..table_len];
         let partition_table_crc32 = crc32_ieee(&partition_table);
         if partition_table_crc32 != header.partition_entry_array_crc32 {
             return Err(GibbloxError::with_message(
@@ -254,6 +267,14 @@ impl GptBlockReader {
             ));
         }
 
+        let partition_reader = WindowBlockReader::new(
+            Arc::clone(&source),
+            partition_offset_bytes,
+            partition_size_bytes,
+            config.block_size,
+        )
+        .await?;
+
         let partition_partuuid = format_guid_disk_bytes(&selected.unique_guid);
         info!(
             partition_index = selected.index,
@@ -265,12 +286,10 @@ impl GptBlockReader {
         );
 
         Ok(Self {
-            block_size: config.block_size,
             partition_size_bytes,
             partition_index: selected.index,
             partition_partuuid,
-            source_reader,
-            partition_offset_bytes,
+            partition_reader,
             config,
         })
     }
@@ -295,11 +314,11 @@ impl GptBlockReader {
 #[async_trait]
 impl BlockReader for GptBlockReader {
     fn block_size(&self) -> u32 {
-        self.block_size
+        self.partition_reader.block_size()
     }
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
-        Ok(self.partition_size_bytes.div_ceil(self.block_size as u64))
+        self.partition_reader.total_blocks().await
     }
 
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
@@ -312,47 +331,14 @@ impl BlockReader for GptBlockReader {
         buf: &mut [u8],
         ctx: ReadContext,
     ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if !buf.len().is_multiple_of(self.block_size as usize) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must align to block size",
-            ));
-        }
-
-        let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-        })?;
-        if offset >= self.partition_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            ));
-        }
-
-        let read_len = ((buf.len() as u64).min(self.partition_size_bytes - offset)) as usize;
-        let source_offset = self
-            .partition_offset_bytes
-            .checked_add(offset)
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
-            })?;
+        let read = self.partition_reader.read_blocks(lba, buf, ctx).await?;
         trace!(
             lba,
-            offset,
             requested = buf.len(),
-            read_len,
+            read,
             "reading partition blocks from GPT"
         );
-        self.source_reader
-            .read_blocks(source_offset, &mut buf[..read_len], ctx)
-            .await?;
-        if read_len < buf.len() {
-            buf[read_len..].fill(0);
-        }
-        Ok(buf.len())
+        Ok(read)
     }
 }
 
@@ -395,6 +381,35 @@ impl GptPartitionEntry {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "partition size overflow")
         })
     }
+}
+
+async fn read_source_blocks_exact(
+    source: &dyn BlockReader,
+    lba: u64,
+    out: &mut [u8],
+    ctx: ReadContext,
+) -> GibbloxResult<()> {
+    if out.is_empty() {
+        return Ok(());
+    }
+    if !out.len().is_multiple_of(source.block_size() as usize) {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            "unaligned GPT source block read requested",
+        ));
+    }
+
+    let read = source.read_blocks(lba, out, ctx).await?;
+    if read != out.len() {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::Io,
+            format!(
+                "short read from GPT source: expected {}, got {read}",
+                out.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_gpt_header(raw: &[u8], total_blocks: u64) -> GibbloxResult<GptHeader> {

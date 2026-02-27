@@ -3,6 +3,10 @@ use core::fmt;
 
 use crate::{BlockReader, ByteReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
 
+/// Explicit Byte->Block boundary adapter.
+///
+/// This is the canonical place where a byte stream's tail is zero-extended to
+/// satisfy fixed-size logical block reads.
 pub struct BlockByteReader<S> {
     inner: S,
     block_size: u32,
