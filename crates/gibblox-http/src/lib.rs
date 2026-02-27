@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use gibblox_core::{
-    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    BlockReaderConfigIdentity, ByteReader, GibbloxError, GibbloxErrorKind, GibbloxResult,
     ReadContext,
 };
 use std::ops::RangeInclusive;
@@ -129,50 +129,29 @@ impl HttpBlockReader {
 }
 
 #[async_trait]
-impl BlockReader for HttpBlockReader {
+impl ByteReader for HttpBlockReader {
     fn block_size(&self) -> u32 {
         self.config.block_size
     }
 
-    async fn total_blocks(&self) -> GibbloxResult<u64> {
-        Ok(self.size_bytes.div_ceil(self.config.block_size as u64))
+    async fn size_bytes(&self) -> GibbloxResult<u64> {
+        Ok(self.size_bytes)
     }
 
     fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         self.config.write_identity(out)
     }
 
-    async fn read_blocks(
-        &self,
-        lba: u64,
-        buf: &mut [u8],
-        ctx: ReadContext,
-    ) -> GibbloxResult<usize> {
+    async fn read_at(&self, offset: u64, buf: &mut [u8], ctx: ReadContext) -> GibbloxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
-        if !buf.len().is_multiple_of(self.config.block_size as usize) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must align to block size",
-            ));
+        if offset >= self.size_bytes {
+            return Ok(0);
         }
 
-        let total_blocks = self.total_blocks().await?;
-        if lba >= total_blocks {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            ));
-        }
-
-        let offset = lba
-            .checked_mul(self.config.block_size as u64)
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-            })?;
-        let available = (self.size_bytes - offset) as usize;
-        let read_len = available.min(buf.len());
+        let available = self.size_bytes - offset;
+        let read_len = (buf.len() as u64).min(available) as usize;
         let range = self.offset_range(offset, read_len)?;
         tracing::trace!(
             url = %self.config.url,
@@ -199,10 +178,7 @@ impl BlockReader for HttpBlockReader {
                 "short HTTP read",
             ));
         }
-        if read_len < buf.len() {
-            buf[read_len..].fill(0);
-        }
-        Ok(buf.len())
+        Ok(read)
     }
 }
 

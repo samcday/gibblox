@@ -102,11 +102,7 @@ impl ZipEntryBlockReader {
                 )
             })?;
 
-        let byte_reader = ByteReader::new(
-            Arc::clone(&source),
-            source_block_size as usize,
-            archive_size_bytes,
-        );
+        let byte_reader = ByteReader::new(Arc::clone(&source)).await?;
         let entry = locate_entry(&byte_reader, archive_size_bytes, config.entry_name.as_str())
             .await
             .map_err(GibbloxError::from)?;
@@ -406,7 +402,7 @@ mod tests {
             data,
             requests: Arc::clone(&requests),
         });
-        let reader = ByteReader::new(source, 512, 1024 * 1024);
+        let reader = block_on(ByteReader::new(source)).expect("create byte reader");
 
         let mut out = vec![0u8; 64 * 1024];
         block_on(reader.read_exact_at(123, &mut out, ReadContext::FOREGROUND))

@@ -17,7 +17,6 @@ mod paged;
 
 pub use aligned_block::AlignedBlockReader;
 pub use byte_range::AlignedByteReader;
-pub use byte_range::AlignedByteReader as ByteRangeReader;
 pub use gpt::{GptBlockReader, GptPartitionSelector};
 pub use lru::{LruBlockReader, LruConfig};
 pub use paged::{PagedBlockConfig, PagedBlockReader};

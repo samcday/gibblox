@@ -47,7 +47,7 @@ gibblox /tmp/pipeline.bin > /tmp/ipxe.iso
 ```
 
 ## Goals
-- Provide a single, read-only `BlockReader` abstraction for block-aligned I/O.
+- Provide read-only `BlockReader` + `ByteReader` abstractions, with explicit block/byte boundary adapters.
 - Support HTTP Range reads on native and wasm targets.
 - Offer a file-backed cache layer with in-flight coalescing.
 - Keep core crates `no_std + alloc` where practical.

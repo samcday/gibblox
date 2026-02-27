@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use bytemuck::try_from_bytes;
 use core::fmt;
 use gibblox_core::{
-    BlockReader, BlockReaderConfigIdentity, ByteRangeReader, GibbloxError, GibbloxErrorKind,
+    AlignedByteReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
     GibbloxResult, ReadContext,
 };
 use hadris_part::mbr::MasterBootRecord;
@@ -110,7 +110,7 @@ pub struct MbrBlockReader {
     partition_size_bytes: u64,
     partition_index: u32,
     partition_partuuid: String,
-    byte_reader: ByteRangeReader,
+    byte_reader: AlignedByteReader,
     partition_offset_bytes: u64,
     config: MbrBlockReaderConfig,
 }
@@ -158,11 +158,7 @@ impl MbrBlockReader {
             .clone()
             .unwrap_or_else(|| gibblox_core::block_identity_string(source.as_ref()));
         let config = config.with_source_identity(source_identity);
-        let byte_reader = ByteRangeReader::new(
-            Arc::clone(&source),
-            source_block_size as usize,
-            source_size_bytes,
-        );
+        let byte_reader = AlignedByteReader::new(Arc::clone(&source)).await?;
 
         let mut mbr_sector = [0u8; MBR_SECTOR_SIZE];
         byte_reader

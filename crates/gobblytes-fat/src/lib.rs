@@ -14,7 +14,7 @@ use alloc::{
     vec::Vec,
 };
 use gibblox_core::{
-    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+    AlignedByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
     block_identity_string,
 };
 use gobblytes_core::{Filesystem, FilesystemEntryType};
@@ -89,11 +89,7 @@ impl FatFs {
         let source_identity = block_identity_string(&source);
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
-        let byte_reader = ByteRangeReader::new(
-            Arc::clone(&source),
-            source_block_size_u32 as usize,
-            source_size_bytes,
-        );
+        let byte_reader = AlignedByteReader::new(Arc::clone(&source)).await?;
         let adapter = BlockReaderIo {
             byte_reader,
             size_bytes: source_size_bytes,
@@ -399,7 +395,7 @@ fn is_dot_name(name: &str) -> bool {
 }
 
 struct BlockReaderIo {
-    byte_reader: ByteRangeReader,
+    byte_reader: AlignedByteReader,
     size_bytes: u64,
     position: u64,
 }

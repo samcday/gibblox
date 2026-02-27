@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use gibblox_core::{
-    BlockReader, ByteRangeReader, GibbloxErrorKind, LruBlockReader, PagedBlockReader, ReadContext,
+    AlignedByteReader, BlockReader, GibbloxErrorKind, LruBlockReader, PagedBlockReader, ReadContext,
 };
 use gobblytes_core::{Filesystem, FilesystemEntryType};
 
@@ -29,11 +29,7 @@ impl ErofsRootfs {
             bail!("source block size must be non-zero power of two");
         }
         let adapter = GibbloxReadAtAdapter {
-            byte_reader: ByteRangeReader::new(
-                Arc::new(paged),
-                source_block_size as usize,
-                image_size_bytes,
-            ),
+            byte_reader: AlignedByteReader::new(Arc::new(paged)).await?,
         };
         let fs = erofs_rs::EroFS::from_image(adapter, image_size_bytes)
             .await
@@ -208,7 +204,7 @@ impl Filesystem for ErofsRootfs {
 
 #[derive(Clone)]
 struct GibbloxReadAtAdapter {
-    byte_reader: ByteRangeReader,
+    byte_reader: AlignedByteReader,
 }
 
 #[async_trait]

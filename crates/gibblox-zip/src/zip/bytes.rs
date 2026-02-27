@@ -1,1 +1,1 @@
-pub(crate) use gibblox_core::ByteRangeReader as ByteReader;
+pub(crate) use gibblox_core::AlignedByteReader as ByteReader;

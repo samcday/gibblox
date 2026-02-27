@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use gibblox_core::{
-    BlockReader, BlockReaderConfigIdentity, ByteRangeReader, GibbloxError, GibbloxErrorKind,
+    AlignedByteReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
     GibbloxResult, ReadContext,
 };
 use tracing::{info, trace};
@@ -62,7 +62,7 @@ pub struct IsoFileBlockReader {
     block_size: u32,
     file_size_bytes: u64,
     file_offset_bytes: u64,
-    byte_reader: ByteRangeReader,
+    byte_reader: AlignedByteReader,
     config: IsoFileBlockReaderConfig,
 }
 
@@ -104,11 +104,7 @@ impl IsoFileBlockReader {
             .clone()
             .unwrap_or_else(|| gibblox_core::block_identity_string(source.as_ref()));
         let config = config.with_source_identity(source_identity);
-        let byte_reader = ByteRangeReader::new(
-            Arc::clone(&source),
-            source_block_size as usize,
-            source_size_bytes,
-        );
+        let byte_reader = AlignedByteReader::new(Arc::clone(&source)).await?;
 
         let mut pvd = [0u8; ISO_SECTOR_SIZE];
         byte_reader
@@ -285,7 +281,7 @@ impl DirRecord {
 }
 
 async fn resolve_path(
-    source: &ByteRangeReader,
+    source: &AlignedByteReader,
     logical_block_size: u64,
     root: &DirRecord,
     path: &str,
@@ -340,7 +336,7 @@ async fn resolve_path(
 }
 
 async fn read_dir_entries(
-    source: &ByteRangeReader,
+    source: &AlignedByteReader,
     logical_block_size: u64,
     dir: &DirRecord,
 ) -> GibbloxResult<Vec<DirRecord>> {
