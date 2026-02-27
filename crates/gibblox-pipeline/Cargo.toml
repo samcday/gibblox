@@ -9,12 +9,35 @@ description = "Pipeline descriptor types and codec helpers for gibblox."
 
 [features]
 default = []
-std = ["serde/std"]
+std = [
+    "serde/std",
+    "gibblox-core/std",
+    "gibblox-casync/std",
+    "gibblox-xz/std",
+    "dep:anyhow",
+    "dep:gibblox-android-sparse",
+    "dep:gibblox-casync",
+    "dep:gibblox-casync-std",
+    "dep:gibblox-file",
+    "dep:gibblox-http",
+    "dep:gibblox-mbr",
+    "dep:gibblox-xz",
+    "dep:url",
+]
 
 [dependencies]
+anyhow = { version = "1.0.95", optional = true }
+gibblox-android-sparse = { workspace = true, features = ["std"], optional = true }
+gibblox-casync = { workspace = true, features = ["std"], optional = true }
+gibblox-casync-std = { workspace = true, optional = true }
 gibblox-core = { workspace = true }
+gibblox-file = { workspace = true, optional = true }
+gibblox-http = { workspace = true, optional = true }
+gibblox-mbr = { workspace = true, optional = true }
+gibblox-xz = { workspace = true, features = ["std"], optional = true }
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 serde = { version = "1.0.217", default-features = false, features = ["derive", "alloc"] }
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_yaml = "0.9.34"
