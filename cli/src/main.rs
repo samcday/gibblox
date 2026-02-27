@@ -16,6 +16,7 @@ use gibblox_casync_std::{
 };
 use gibblox_core::{
     BlockByteReader, BlockReader, GptBlockReader, GptPartitionSelector, ReadContext,
+    WindowBlockReader,
 };
 use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
@@ -46,6 +47,15 @@ struct Cli {
     /// Output path for resolved pipeline bytes ("-" for stdout).
     #[arg(short, long, value_name = "OUTPUT", requires = "pipeline")]
     output: Option<String>,
+    /// Start block offset within resolved pipeline output.
+    #[arg(long, value_name = "START", requires = "pipeline")]
+    start: Option<u64>,
+    /// Number of blocks to copy from resolved pipeline output.
+    #[arg(long, value_name = "COUNT", requires = "pipeline")]
+    count: Option<u64>,
+    /// Logical block size for pipeline execution.
+    #[arg(long, value_name = "BLOCK_SIZE", requires = "pipeline")]
+    blocksize: Option<u32>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -106,8 +116,16 @@ struct PipelineValidateArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if cli.command.is_some() && (cli.pipeline.is_some() || cli.output.is_some()) {
-        bail!("PIPELINE and --output cannot be used with subcommands");
+    if cli.command.is_some()
+        && (cli.pipeline.is_some()
+            || cli.output.is_some()
+            || cli.start.is_some()
+            || cli.count.is_some()
+            || cli.blocksize.is_some())
+    {
+        bail!(
+            "PIPELINE, --output, --start, --count, and --blocksize cannot be used with subcommands"
+        );
     }
 
     match cli.command {
@@ -117,24 +135,41 @@ async fn main() -> Result<()> {
                 .pipeline
                 .ok_or_else(|| anyhow!("missing required PIPELINE input"))?;
             let output = cli.output.as_deref().unwrap_or("-");
-            run_default_pipeline_execute(&input, output).await
+            run_default_pipeline_execute(
+                &input,
+                output,
+                cli.start.unwrap_or(0),
+                cli.count,
+                cli.blocksize,
+            )
+            .await
         }
     }
 }
 
-async fn run_default_pipeline_execute(input_path: &str, output_path: &str) -> Result<()> {
+async fn run_default_pipeline_execute(
+    input_path: &str,
+    output_path: &str,
+    start_blocks: u64,
+    count_blocks: Option<u64>,
+    requested_block_size: Option<u32>,
+) -> Result<()> {
     validate_binary_output(
         output_path,
         "gibblox pipeline",
         std::io::stdout().is_terminal(),
     )?;
 
+    let block_size = requested_block_size.unwrap_or(DEFAULT_IMAGE_BLOCK_SIZE);
+    validate_image_block_size(block_size)?;
+
     let input = read_input_bytes(input_path)?;
     let source = parse_pipeline_document(&input, input_path)?;
     validate_pipeline(&source)
         .with_context(|| format!("validate pipeline input {}", io_label(input_path)))?;
 
-    let reader = open_pipeline_source(&source).await?;
+    let reader = open_pipeline_source(&source, block_size).await?;
+    let reader = slice_reader(reader, start_blocks, count_blocks).await?;
     write_reader_output(reader.as_ref(), output_path).await
 }
 
@@ -202,8 +237,71 @@ fn parse_pipeline_document(input: &[u8], label: &str) -> Result<PipelineSource> 
         .with_context(|| format!("parse pipeline YAML input {}", io_label(label)))
 }
 
+fn validate_image_block_size(block_size: u32) -> Result<()> {
+    if block_size == 0 || !block_size.is_power_of_two() {
+        bail!("pipeline block size must be a non-zero power of two")
+    }
+    Ok(())
+}
+
+fn resolve_block_span(
+    total_blocks: u64,
+    start_blocks: u64,
+    count_blocks: Option<u64>,
+) -> Result<(u64, u64)> {
+    if start_blocks > total_blocks {
+        bail!("pipeline read start block {start_blocks} exceeds available blocks {total_blocks}");
+    }
+
+    let blocks = match count_blocks {
+        Some(count) => {
+            let end = start_blocks
+                .checked_add(count)
+                .ok_or_else(|| anyhow!("pipeline block range overflow"))?;
+            if end > total_blocks {
+                bail!(
+                    "pipeline read range start={start_blocks} count={count} exceeds available blocks {total_blocks}"
+                );
+            }
+            count
+        }
+        None => total_blocks - start_blocks,
+    };
+
+    Ok((start_blocks, blocks))
+}
+
+async fn slice_reader(
+    reader: DynBlockReader,
+    start_blocks: u64,
+    count_blocks: Option<u64>,
+) -> Result<DynBlockReader> {
+    let total_blocks = reader
+        .total_blocks()
+        .await
+        .map_err(|err| anyhow!("read pipeline total blocks: {err}"))?;
+    let (start_blocks, span_blocks) = resolve_block_span(total_blocks, start_blocks, count_blocks)?;
+    if start_blocks == 0 && span_blocks == total_blocks {
+        return Ok(reader);
+    }
+
+    let block_size = reader.block_size();
+    let offset_bytes = start_blocks
+        .checked_mul(block_size as u64)
+        .ok_or_else(|| anyhow!("pipeline start byte offset overflow"))?;
+    let size_bytes = span_blocks
+        .checked_mul(block_size as u64)
+        .ok_or_else(|| anyhow!("pipeline span byte length overflow"))?;
+
+    let window = WindowBlockReader::new(reader, offset_bytes, size_bytes, block_size)
+        .await
+        .map_err(|err| anyhow!("construct pipeline read window: {err}"))?;
+    Ok(Arc::new(window) as DynBlockReader)
+}
+
 fn open_pipeline_source<'a>(
     source: &'a PipelineSource,
+    block_size: u32,
 ) -> Pin<Box<dyn Future<Output = Result<DynBlockReader>> + 'a>> {
     Box::pin(async move {
         match source {
@@ -215,10 +313,10 @@ fn open_pipeline_source<'a>(
 
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
-                let reader = HttpReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+                let reader = HttpReader::new(url.clone(), block_size)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
-                let reader = BlockByteReader::new(reader, DEFAULT_IMAGE_BLOCK_SIZE)
+                let reader = BlockByteReader::new(reader, block_size)
                     .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
@@ -228,20 +326,21 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline file source is empty");
                 }
 
-                let reader = FileReader::open(value, DEFAULT_IMAGE_BLOCK_SIZE)
+                let reader = FileReader::open(value, block_size)
                     .map_err(|err| anyhow!("open file source {value}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
-            PipelineSource::Casync(source) => open_casync_source(&source.casync).await,
+            PipelineSource::Casync(source) => open_casync_source(&source.casync, block_size).await,
             PipelineSource::Xz(source) => {
-                let upstream = open_pipeline_source(source.xz.as_ref()).await?;
+                let upstream = open_pipeline_source(source.xz.as_ref(), block_size).await?;
                 let reader = XzBlockReader::new(upstream)
                     .await
                     .map_err(|err| anyhow!("open xz reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::AndroidSparseImg(source) => {
-                let upstream = open_pipeline_source(source.android_sparseimg.as_ref()).await?;
+                let upstream =
+                    open_pipeline_source(source.android_sparseimg.as_ref(), block_size).await?;
                 let reader = AndroidSparseBlockReader::new(upstream)
                     .await
                     .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
@@ -256,8 +355,8 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline mbr source missing selector")
                 };
 
-                let upstream = open_pipeline_source(source.mbr.source.as_ref()).await?;
-                let reader = MbrBlockReader::new(upstream, selector, DEFAULT_IMAGE_BLOCK_SIZE)
+                let upstream = open_pipeline_source(source.mbr.source.as_ref(), block_size).await?;
+                let reader = MbrBlockReader::new(upstream, selector, block_size)
                     .await
                     .map_err(|err| anyhow!("open mbr reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
@@ -273,8 +372,8 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline gpt source missing selector")
                 };
 
-                let upstream = open_pipeline_source(source.gpt.source.as_ref()).await?;
-                let reader = GptBlockReader::new(upstream, selector, DEFAULT_IMAGE_BLOCK_SIZE)
+                let upstream = open_pipeline_source(source.gpt.source.as_ref(), block_size).await?;
+                let reader = GptBlockReader::new(upstream, selector, block_size)
                     .await
                     .map_err(|err| anyhow!("open gpt reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
@@ -285,6 +384,7 @@ fn open_pipeline_source<'a>(
 
 async fn open_casync_source(
     source: &gibblox_pipeline::PipelineSourceCasync,
+    block_size: u32,
 ) -> Result<DynBlockReader> {
     let index = source.index.trim();
     if index.is_empty() {
@@ -307,7 +407,7 @@ async fn open_casync_source(
         index_source,
         chunk_store,
         CasyncReaderConfig {
-            block_size: DEFAULT_IMAGE_BLOCK_SIZE,
+            block_size,
             strict_verify: false,
             identity: Some(pipeline_identity_string(&PipelineSource::Casync(
                 PipelineSourceCasyncSource {
@@ -564,7 +664,8 @@ fn io_label(path: &str) -> String {
 mod tests {
     use super::{
         Cli, PipelineArgs, PipelineCommand, parse_casync_chunk_store_locator,
-        parse_casync_index_locator, parse_pipeline_document, validate_binary_output,
+        parse_casync_index_locator, parse_pipeline_document, resolve_block_span,
+        validate_binary_output,
     };
     use clap::Parser;
     use gibblox_casync_std::{StdCasyncChunkStoreLocator, StdCasyncIndexLocator};
@@ -574,6 +675,27 @@ mod tests {
         let cli = Cli::parse_from(["gibblox-cli", "pipeline.yaml", "--output", "out.img"]);
         assert_eq!(cli.pipeline.as_deref(), Some("pipeline.yaml"));
         assert_eq!(cli.output.as_deref(), Some("out.img"));
+    }
+
+    #[test]
+    fn parse_top_level_pipeline_range_and_blocksize() {
+        let cli = Cli::parse_from([
+            "gibblox-cli",
+            "pipeline.yaml",
+            "--output",
+            "out.img",
+            "--start",
+            "8",
+            "--count",
+            "16",
+            "--blocksize",
+            "4096",
+        ]);
+        assert_eq!(cli.pipeline.as_deref(), Some("pipeline.yaml"));
+        assert_eq!(cli.output.as_deref(), Some("out.img"));
+        assert_eq!(cli.start, Some(8));
+        assert_eq!(cli.count, Some(16));
+        assert_eq!(cli.blocksize, Some(4096));
     }
 
     #[test]
@@ -686,5 +808,19 @@ mod tests {
             validate_binary_output("-", "gibblox pipeline", false).is_ok(),
             "non-tty stdout should be allowed"
         );
+    }
+
+    #[test]
+    fn resolve_block_span_defaults_to_remaining() {
+        let (start, blocks) = resolve_block_span(100, 10, None).expect("resolve default span");
+        assert_eq!(start, 10);
+        assert_eq!(blocks, 90);
+    }
+
+    #[test]
+    fn resolve_block_span_rejects_out_of_range_count() {
+        let err = resolve_block_span(100, 90, Some(11)).expect_err("range should overflow source");
+        let msg = format!("{err}");
+        assert!(msg.contains("exceeds available blocks"));
     }
 }
