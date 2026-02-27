@@ -25,9 +25,9 @@ For each reader type, define a config struct and make constructor(s) accept it.
 
 Examples:
 
-- `HttpBlockReaderConfig`
+- `HttpReaderConfig`
 - `CasyncReaderConfig` (already exists; extend for identity needs)
-- `FileBlockReaderConfig`
+- `FileReaderConfig`
 - wrapper configs such as `XzBlockReaderConfig`, `GptBlockReaderConfig`, etc.
 
 Each config should support:

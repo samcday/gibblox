@@ -13,13 +13,13 @@ use gibblox_core::{
 use tracing::{debug, trace};
 
 #[derive(Clone, Debug)]
-pub struct StdFileBlockReaderConfig {
+pub struct FileReaderConfig {
     pub path: Option<PathBuf>,
     pub block_size: u32,
     pub identity_path: String,
 }
 
-impl StdFileBlockReaderConfig {
+impl FileReaderConfig {
     pub fn new(path: impl AsRef<Path>, block_size: u32) -> GibbloxResult<Self> {
         validate_block_size(block_size)?;
         let path = path.as_ref();
@@ -41,25 +41,25 @@ impl StdFileBlockReaderConfig {
     }
 }
 
-impl BlockReaderConfigIdentity for StdFileBlockReaderConfig {
+impl BlockReaderConfigIdentity for FileReaderConfig {
     fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         write!(out, "file:{}", self.identity_path)
     }
 }
 
 /// Simple block-aligned source wrapper over `std::fs::File`.
-pub struct StdFileBlockReader {
+pub struct FileReader {
     file: File,
     size_bytes: u64,
-    config: StdFileBlockReaderConfig,
+    config: FileReaderConfig,
 }
 
-impl StdFileBlockReader {
+impl FileReader {
     pub fn open(path: impl AsRef<Path>, block_size: u32) -> GibbloxResult<Self> {
-        Self::open_with_config(StdFileBlockReaderConfig::new(path, block_size)?)
+        Self::open_with_config(FileReaderConfig::new(path, block_size)?)
     }
 
-    pub fn open_with_config(config: StdFileBlockReaderConfig) -> GibbloxResult<Self> {
+    pub fn open_with_config(config: FileReaderConfig) -> GibbloxResult<Self> {
         validate_block_size(config.block_size)?;
         let path = config.path.as_ref().ok_or_else(|| {
             GibbloxError::with_message(
@@ -75,7 +75,7 @@ impl StdFileBlockReader {
     pub fn from_file(file: File, block_size: u32) -> GibbloxResult<Self> {
         Self::from_file_with_config(
             file,
-            StdFileBlockReaderConfig::with_identity_path(String::from("<unknown>"), block_size)?,
+            FileReaderConfig::with_identity_path(String::from("<unknown>"), block_size)?,
         )
     }
 
@@ -86,14 +86,11 @@ impl StdFileBlockReader {
     ) -> GibbloxResult<Self> {
         Self::from_file_with_config(
             file,
-            StdFileBlockReaderConfig::with_identity_path(identity_path, block_size)?,
+            FileReaderConfig::with_identity_path(identity_path, block_size)?,
         )
     }
 
-    pub fn from_file_with_config(
-        file: File,
-        config: StdFileBlockReaderConfig,
-    ) -> GibbloxResult<Self> {
+    pub fn from_file_with_config(file: File, config: FileReaderConfig) -> GibbloxResult<Self> {
         validate_block_size(config.block_size)?;
         let size_bytes = file.metadata().map_err(map_io_err("stat file"))?.len();
         debug!(
@@ -108,7 +105,7 @@ impl StdFileBlockReader {
         })
     }
 
-    pub fn config(&self) -> &StdFileBlockReaderConfig {
+    pub fn config(&self) -> &FileReaderConfig {
         &self.config
     }
 
@@ -118,7 +115,7 @@ impl StdFileBlockReader {
 }
 
 #[async_trait]
-impl ByteReader for StdFileBlockReader {
+impl ByteReader for FileReader {
     async fn size_bytes(&self) -> GibbloxResult<u64> {
         Ok(self.size_bytes)
     }
@@ -155,7 +152,7 @@ impl ByteReader for StdFileBlockReader {
 }
 
 #[async_trait]
-impl BlockReader for StdFileBlockReader {
+impl BlockReader for FileReader {
     fn block_size(&self) -> u32 {
         self.config.block_size
     }
@@ -209,7 +206,7 @@ fn read_file_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usi
 #[cfg(not(any(target_family = "unix", target_family = "windows")))]
 fn read_file_at(_file: &File, _buf: &mut [u8], _offset: u64) -> std::io::Result<usize> {
     Err(std::io::Error::other(
-        "StdFileBlockReader is unsupported on this target",
+        "FileReader is unsupported on this target",
     ))
 }
 

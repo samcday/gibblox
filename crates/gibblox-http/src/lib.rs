@@ -19,13 +19,13 @@ mod wasm;
 
 /// HTTP-backed read-only gibblox source.
 #[derive(Clone, Debug)]
-pub struct HttpBlockReaderConfig {
+pub struct HttpReaderConfig {
     pub url: Url,
     pub block_size: u32,
     pub size_bytes: Option<u64>,
 }
 
-impl HttpBlockReaderConfig {
+impl HttpReaderConfig {
     pub fn new(url: Url, block_size: u32) -> Self {
         Self {
             url,
@@ -53,22 +53,22 @@ impl HttpBlockReaderConfig {
     }
 }
 
-impl BlockReaderConfigIdentity for HttpBlockReaderConfig {
+impl BlockReaderConfigIdentity for HttpReaderConfig {
     fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         write!(out, "http:{}", self.url.as_str())
     }
 }
 
 /// HTTP-backed read-only gibblox source.
-pub struct HttpBlockReader {
-    config: HttpBlockReaderConfig,
+pub struct HttpReader {
+    config: HttpReaderConfig,
     size_bytes: u64,
     inner: HttpClient,
 }
 
-impl HttpBlockReader {
+impl HttpReader {
     /// Construct a new HTTP source from config.
-    pub async fn open(config: HttpBlockReaderConfig) -> GibbloxResult<Self> {
+    pub async fn open(config: HttpReaderConfig) -> GibbloxResult<Self> {
         config.validate()?;
         let client = HttpClient::new()?;
         let size_bytes = if let Some(size_bytes) = config.size_bytes {
@@ -89,18 +89,15 @@ impl HttpBlockReader {
 
     /// Construct a new HTTP source. `url` must be absolute and point to the backing object.
     pub async fn new(url: Url, block_size: u32) -> GibbloxResult<Self> {
-        Self::open(HttpBlockReaderConfig::new(url, block_size)).await
+        Self::open(HttpReaderConfig::new(url, block_size)).await
     }
 
     /// Construct with an explicit size (skips remote probe).
     pub async fn new_with_size(url: Url, block_size: u32, size_bytes: u64) -> GibbloxResult<Self> {
-        Self::open(HttpBlockReaderConfig::with_size(
-            url, block_size, size_bytes,
-        ))
-        .await
+        Self::open(HttpReaderConfig::with_size(url, block_size, size_bytes)).await
     }
 
-    pub fn config(&self) -> &HttpBlockReaderConfig {
+    pub fn config(&self) -> &HttpReaderConfig {
         &self.config
     }
 
@@ -129,7 +126,7 @@ impl HttpBlockReader {
 }
 
 #[async_trait]
-impl ByteReader for HttpBlockReader {
+impl ByteReader for HttpReader {
     async fn size_bytes(&self) -> GibbloxResult<u64> {
         Ok(self.size_bytes)
     }

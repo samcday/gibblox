@@ -90,10 +90,10 @@ Tomorrow:
 use gibblox_core::{BlockReader, ReadContext};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
-use gibblox_http::HttpBlockReader;
+use gibblox_http::HttpReader;
 
 # async fn example() -> anyhow::Result<()> {
-let source = HttpBlockReader::new("https://example.com/rootfs.img".parse()?, 4096).await?;
+let source = HttpReader::new("https://example.com/rootfs.img".parse()?, 4096).await?;
 let cache = StdCacheOps::open_default_for_reader(&source).await?;
 let source = CachedBlockReader::new(source, cache).await?;
 let mut buf = vec![0u8; 4096];

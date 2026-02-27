@@ -63,14 +63,14 @@ mod wasm {
     }
 
     #[derive(Clone, Debug)]
-    pub struct WebFileBlockReaderConfig {
+    pub struct WebFileReaderConfig {
         pub block_size: u32,
         pub file_name: String,
         pub size_bytes: u64,
         pub last_modified: i64,
     }
 
-    impl WebFileBlockReaderConfig {
+    impl WebFileReaderConfig {
         fn from_send_file(file: &SendFile, block_size: u32) -> GibbloxResult<Self> {
             if block_size == 0 || !block_size.is_power_of_two() {
                 return Err(GibbloxError::with_message(
@@ -92,7 +92,7 @@ mod wasm {
         }
     }
 
-    impl BlockReaderConfigIdentity for WebFileBlockReaderConfig {
+    impl BlockReaderConfigIdentity for WebFileReaderConfig {
         fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
             write!(
                 out,
@@ -102,15 +102,15 @@ mod wasm {
         }
     }
 
-    pub struct WebFileBlockReader {
+    pub struct WebFileReader {
         file: SendFile,
-        config: WebFileBlockReaderConfig,
+        config: WebFileReaderConfig,
     }
 
-    impl WebFileBlockReader {
+    impl WebFileReader {
         pub fn new(file: File, block_size: u32) -> GibbloxResult<Self> {
             let file = SendFile(file);
-            let config = WebFileBlockReaderConfig::from_send_file(&file, block_size)?;
+            let config = WebFileReaderConfig::from_send_file(&file, block_size)?;
             debug!(
                 name = %config.file_name,
                 size_bytes = config.size_bytes,
@@ -122,7 +122,7 @@ mod wasm {
             Ok(Self { file, config })
         }
 
-        pub fn config(&self) -> &WebFileBlockReaderConfig {
+        pub fn config(&self) -> &WebFileReaderConfig {
             &self.config
         }
 
@@ -132,7 +132,7 @@ mod wasm {
     }
 
     #[async_trait]
-    impl ByteReader for WebFileBlockReader {
+    impl ByteReader for WebFileReader {
         async fn size_bytes(&self) -> GibbloxResult<u64> {
             Ok(self.config.size_bytes)
         }
@@ -195,7 +195,7 @@ mod wasm {
     }
 
     #[async_trait]
-    impl BlockReader for WebFileBlockReader {
+    impl BlockReader for WebFileReader {
         fn block_size(&self) -> u32 {
             self.config.block_size
         }

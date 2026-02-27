@@ -17,8 +17,8 @@ use gibblox_casync_std::{
 use gibblox_core::{
     BlockByteReader, BlockReader, GptBlockReader, GptPartitionSelector, ReadContext,
 };
-use gibblox_file::StdFileBlockReader;
-use gibblox_http::HttpBlockReader;
+use gibblox_file::FileReader;
+use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_pipeline::{
     PipelineSource, PipelineSourceCasyncSource, decode_pipeline, encode_pipeline,
@@ -215,7 +215,7 @@ fn open_pipeline_source<'a>(
 
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
-                let reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+                let reader = HttpReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
                 let reader = BlockByteReader::new(reader, DEFAULT_IMAGE_BLOCK_SIZE)
@@ -228,7 +228,7 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline file source is empty");
                 }
 
-                let reader = StdFileBlockReader::open(value, DEFAULT_IMAGE_BLOCK_SIZE)
+                let reader = FileReader::open(value, DEFAULT_IMAGE_BLOCK_SIZE)
                     .map_err(|err| anyhow!("open file source {value}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }

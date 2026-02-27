@@ -28,13 +28,13 @@ pub enum Ext4EntryType {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ext4FileBlockReaderConfig {
+pub struct Ext4FileReaderConfig {
     pub path: String,
     pub block_size: u32,
     pub source_identity: Option<String>,
 }
 
-impl Ext4FileBlockReaderConfig {
+impl Ext4FileReaderConfig {
     pub fn new(path: &str, block_size: u32) -> GibbloxResult<Self> {
         validate_block_size(block_size)?;
         Ok(Self {
@@ -54,7 +54,7 @@ impl Ext4FileBlockReaderConfig {
     }
 }
 
-impl BlockReaderConfigIdentity for Ext4FileBlockReaderConfig {
+impl BlockReaderConfigIdentity for Ext4FileReaderConfig {
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
         out.write_str("ext4-file:(")?;
         out.write_str(
@@ -227,27 +227,27 @@ impl Ext4Fs {
 }
 
 /// File-backed block reader sourced from a file inside an ext4 image.
-pub struct Ext4FileBlockReader {
+pub struct Ext4FileReader {
     block_size: u32,
     file_size_bytes: u64,
     file_path: String,
     source: Arc<dyn BlockReader>,
-    config: Ext4FileBlockReaderConfig,
+    config: Ext4FileReaderConfig,
 }
 
-impl Ext4FileBlockReader {
+impl Ext4FileReader {
     /// Build a block reader for `path` from an ext4 image exposed through `BlockReader`.
     pub async fn new<S: BlockReader + 'static>(
         source: S,
         path: &str,
         block_size: u32,
     ) -> GibbloxResult<Self> {
-        Self::open_with_config(source, Ext4FileBlockReaderConfig::new(path, block_size)?).await
+        Self::open_with_config(source, Ext4FileReaderConfig::new(path, block_size)?).await
     }
 
     pub async fn open_with_config<S: BlockReader + 'static>(
         source: S,
-        config: Ext4FileBlockReaderConfig,
+        config: Ext4FileReaderConfig,
     ) -> GibbloxResult<Self> {
         config.validate()?;
         info!(path = %config.path, block_size = config.block_size, "constructing ext4-backed reader");
@@ -277,7 +277,7 @@ impl Ext4FileBlockReader {
         })
     }
 
-    pub fn config(&self) -> &Ext4FileBlockReaderConfig {
+    pub fn config(&self) -> &Ext4FileReaderConfig {
         &self.config
     }
 
@@ -287,7 +287,7 @@ impl Ext4FileBlockReader {
 }
 
 #[async_trait]
-impl ByteReader for Ext4FileBlockReader {
+impl ByteReader for Ext4FileReader {
     async fn size_bytes(&self) -> GibbloxResult<u64> {
         Ok(self.file_size_bytes)
     }
@@ -324,7 +324,7 @@ impl ByteReader for Ext4FileBlockReader {
 }
 
 #[async_trait]
-impl BlockReader for Ext4FileBlockReader {
+impl BlockReader for Ext4FileReader {
     fn block_size(&self) -> u32 {
         self.block_size
     }
