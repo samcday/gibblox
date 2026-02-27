@@ -12,6 +12,7 @@ use gibblox_pipeline::{
     OpenPipelineOptions, PipelineSource, decode_pipeline, encode_pipeline, open_pipeline,
     pipeline_bin_header_version, validate_pipeline,
 };
+use tracing_subscriber::{EnvFilter, fmt};
 
 const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 const DEFAULT_SOURCE_BLOCK_SIZE: u32 = 4096;
@@ -100,6 +101,8 @@ struct PipelineValidateArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing()?;
+
     let cli = Cli::parse();
 
     if cli.command.is_some()
@@ -131,6 +134,21 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+fn init_tracing() -> Result<()> {
+    let filter = match std::env::var("RUST_LOG") {
+        Ok(filter) if !filter.trim().is_empty() => {
+            EnvFilter::try_from_default_env().context("failed to parse RUST_LOG env filter")?
+        }
+        _ => EnvFilter::new("off"),
+    };
+
+    fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .map_err(|err| anyhow!("failed to initialize tracing subscriber: {err}"))
 }
 
 async fn run_default_pipeline_execute(

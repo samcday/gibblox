@@ -741,6 +741,7 @@ dependencies = [
  "gibblox-pipeline",
  "serde_yaml",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
