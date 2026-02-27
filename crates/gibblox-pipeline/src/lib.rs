@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(any(feature = "std", feature = "web")), no_std)]
 
 extern crate alloc;
 
@@ -20,8 +20,16 @@ pub mod bin;
 #[cfg(feature = "std")]
 mod materialize_std;
 
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+mod materialize_web;
+
 #[cfg(feature = "std")]
 pub use materialize_std::{OpenPipelineOptions, open_pipeline};
+
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use materialize_web::{
+    OpenPipelineOptions as OpenWebPipelineOptions, open_pipeline as open_pipeline_web,
+};
 
 #[derive(Debug)]
 pub enum PipelineCodecError {
@@ -48,7 +56,7 @@ impl fmt::Display for PipelineCodecError {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "web"))]
 impl std::error::Error for PipelineCodecError {}
 
 impl From<postcard::Error> for PipelineCodecError {
@@ -146,7 +154,7 @@ impl fmt::Display for PipelineValidationError {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "web"))]
 impl std::error::Error for PipelineValidationError {}
 
 pub const MAX_PIPELINE_DEPTH: usize = 16;

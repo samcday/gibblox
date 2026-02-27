@@ -1,28 +1,15 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use futures_channel::oneshot;
-    use futures_util::{FutureExt, future::LocalBoxFuture, future::select};
-    use gibblox_android_sparse::{AndroidSparseBlockReader, AndroidSparseBlockReaderConfig};
+    use futures_util::{FutureExt, future::select};
     use gibblox_blockreader_messageport::{
         MessagePortBlockReaderClient, MessagePortBlockReaderServer,
     };
-    use gibblox_cache::CachedBlockReader;
-    use gibblox_cache_store_opfs::OpfsCacheOps;
-    use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
-    use gibblox_casync_web::{
-        WebCasyncChunkStore, WebCasyncChunkStoreConfig, WebCasyncIndexSource,
-    };
-    use gibblox_core::{
-        BlockByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult,
-        GptBlockReader, GptPartitionSelector,
-    };
-    use gibblox_http::{HttpReader, HttpReaderConfig};
-    use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
+    use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
     use gibblox_pipeline::{
-        PipelineSource, PipelineSourceCasyncSource, decode_pipeline, pipeline_identity_id,
+        OpenWebPipelineOptions, decode_pipeline, open_pipeline_web, pipeline_identity_id,
         pipeline_identity_string, validate_pipeline,
     };
-    use gibblox_xz::{XzBlockReader, XzBlockReaderConfig};
     use gloo_timers::future::sleep;
     use js_sys::{Array, Object, Reflect, Uint8Array};
     use std::cell::RefCell;
@@ -31,16 +18,13 @@ mod wasm {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use tracing::{debug, error, info, warn};
-    use url::Url;
+    use tracing::{debug, error, info};
     use wasm_bindgen::{JsCast, JsValue, closure::Closure};
     use wasm_bindgen_futures::spawn_local;
     use web_sys::{DedicatedWorkerGlobalScope, MessageChannel, MessageEvent, MessagePort, Worker};
 
     const READY_TIMEOUT: Duration = Duration::from_secs(5);
     const WORKER_PROTOCOL_VERSION: u32 = 1;
-    const PIPELINE_BLOCK_SIZE: u32 = 512;
-
     const READY_CMD: &str = "ready";
     const ERROR_CMD: &str = "error";
     const OPEN_PIPELINE_CMD: &str = "open_pipeline";
@@ -474,7 +458,7 @@ mod wasm {
             debug!(identity = %identity, identity_id, "reusing resolved pipeline reader");
             reader
         } else {
-            let reader = resolve_pipeline_source(&pipeline).await?;
+            let reader = open_pipeline_web(&pipeline, &OpenWebPipelineOptions::default()).await?;
             state
                 .borrow_mut()
                 .readers
@@ -492,195 +476,6 @@ mod wasm {
         state.borrow_mut().servers.push(server);
 
         Ok(())
-    }
-
-    fn resolve_pipeline_source(
-        pipeline_source: &PipelineSource,
-    ) -> LocalBoxFuture<'_, GibbloxResult<Arc<dyn BlockReader>>> {
-        async move {
-            match pipeline_source {
-                PipelineSource::Http(source) => resolve_http_source(source).await,
-                PipelineSource::File(source) => Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Unsupported,
-                    format!(
-                        "pipeline file source is unsupported in web worker runtime: {}",
-                        source.file
-                    ),
-                )),
-                PipelineSource::Casync(source) => {
-                    resolve_casync_source(source, source_identity(pipeline_source)).await
-                }
-                PipelineSource::Xz(source) => {
-                    let upstream = resolve_pipeline_source(source.xz.as_ref()).await?;
-                    let config = XzBlockReaderConfig::default()
-                        .with_source_identity(source_identity(source.xz.as_ref()));
-                    let reader = XzBlockReader::open_with_block_config(upstream, config).await?;
-                    let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                    Ok(reader)
-                }
-                PipelineSource::AndroidSparseImg(source) => {
-                    let upstream =
-                        resolve_pipeline_source(source.android_sparseimg.as_ref()).await?;
-                    let config = AndroidSparseBlockReaderConfig::default()
-                        .with_source_identity(source_identity(source.android_sparseimg.as_ref()));
-                    let reader =
-                        AndroidSparseBlockReader::new_with_config(upstream, config).await?;
-                    let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                    Ok(reader)
-                }
-                PipelineSource::Mbr(source) => {
-                    let upstream = resolve_pipeline_source(source.mbr.source.as_ref()).await?;
-                    let selector = mbr_selector(source)?;
-                    let config = MbrBlockReaderConfig::new(selector, upstream.block_size())
-                        .with_source_identity(source_identity(source.mbr.source.as_ref()));
-                    let reader = MbrBlockReader::open_with_config(upstream, config).await?;
-                    let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                    Ok(reader)
-                }
-                PipelineSource::Gpt(source) => {
-                    let upstream = resolve_pipeline_source(source.gpt.source.as_ref()).await?;
-                    let selector = gpt_selector(source)?;
-                    let block_size = upstream.block_size();
-                    let reader = GptBlockReader::new(upstream, selector, block_size).await?;
-                    let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                    Ok(reader)
-                }
-            }
-        }
-        .boxed_local()
-    }
-
-    async fn resolve_http_source(
-        source: &gibblox_pipeline::PipelineSourceHttpSource,
-    ) -> GibbloxResult<Arc<dyn BlockReader>> {
-        let url = parse_url(source.http.as_str(), "pipeline http source")?;
-        let config = HttpReaderConfig::new(url, PIPELINE_BLOCK_SIZE);
-        let reader =
-            BlockByteReader::new(HttpReader::open(config.clone()).await?, PIPELINE_BLOCK_SIZE)?;
-
-        let cache = match OpfsCacheOps::open_for_config(&config).await {
-            Ok(cache) => cache,
-            Err(err) => {
-                warn!(error = %err, "failed to open OPFS cache for HTTP source, using uncached reader");
-                return Ok(Arc::new(reader));
-            }
-        };
-
-        match CachedBlockReader::new(reader, cache).await {
-            Ok(cached) => Ok(Arc::new(cached)),
-            Err(err) => {
-                warn!(error = %err, "failed to initialize cached HTTP reader, using uncached reader");
-                Ok(Arc::new(BlockByteReader::new(
-                    HttpReader::open(config).await?,
-                    PIPELINE_BLOCK_SIZE,
-                )?))
-            }
-        }
-    }
-
-    async fn resolve_casync_source(
-        source: &PipelineSourceCasyncSource,
-        identity: String,
-    ) -> GibbloxResult<Arc<dyn BlockReader>> {
-        let index_url = parse_url(source.casync.index.as_str(), "pipeline casync.index")?;
-        let chunk_store_url = match source.casync.chunk_store.as_deref() {
-            Some(chunk_store) => parse_url(chunk_store, "pipeline casync.chunk_store")?,
-            None => derive_casync_chunk_store_url(&index_url)?,
-        };
-
-        let chunk_store_config = WebCasyncChunkStoreConfig::new(chunk_store_url)?;
-        let chunk_store = WebCasyncChunkStore::new(chunk_store_config).await?;
-        let config = CasyncReaderConfig {
-            block_size: PIPELINE_BLOCK_SIZE,
-            strict_verify: false,
-            identity: Some(identity),
-        };
-
-        let reader =
-            CasyncBlockReader::open(WebCasyncIndexSource::new(index_url), chunk_store, config)
-                .await?;
-        Ok(Arc::new(reader))
-    }
-
-    fn mbr_selector(
-        source: &gibblox_pipeline::PipelineSourceMbrSource,
-    ) -> GibbloxResult<MbrPartitionSelector> {
-        if let Some(partuuid) = source.mbr.partuuid.as_deref() {
-            return Ok(MbrPartitionSelector::part_uuid(partuuid.to_string()));
-        }
-        if let Some(index) = source.mbr.index {
-            return Ok(MbrPartitionSelector::index(index));
-        }
-
-        Err(GibbloxError::with_message(
-            GibbloxErrorKind::InvalidInput,
-            "pipeline mbr selector missing",
-        ))
-    }
-
-    fn gpt_selector(
-        source: &gibblox_pipeline::PipelineSourceGptSource,
-    ) -> GibbloxResult<GptPartitionSelector> {
-        if let Some(partlabel) = source.gpt.partlabel.as_deref() {
-            return Ok(GptPartitionSelector::part_label(partlabel.to_string()));
-        }
-        if let Some(partuuid) = source.gpt.partuuid.as_deref() {
-            return Ok(GptPartitionSelector::part_uuid(partuuid.to_string()));
-        }
-        if let Some(index) = source.gpt.index {
-            return Ok(GptPartitionSelector::index(index));
-        }
-
-        Err(GibbloxError::with_message(
-            GibbloxErrorKind::InvalidInput,
-            "pipeline gpt selector missing",
-        ))
-    }
-
-    fn source_identity(source: &PipelineSource) -> String {
-        pipeline_identity_string(source)
-    }
-
-    fn parse_url(value: &str, context: &str) -> GibbloxResult<Url> {
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                format!("{context} must not be empty"),
-            ));
-        }
-
-        Url::parse(value).map_err(|err| {
-            GibbloxError::with_message(GibbloxErrorKind::InvalidInput, format!("{context}: {err}"))
-        })
-    }
-
-    fn derive_casync_chunk_store_url(index_url: &Url) -> GibbloxResult<Url> {
-        if let Some(segments) = index_url.path_segments() {
-            let segments: Vec<&str> = segments.collect();
-            if let Some(index_pos) = segments.iter().rposition(|segment| *segment == "indexes") {
-                let mut base_segments = segments[..=index_pos].to_vec();
-                base_segments[index_pos] = "chunks";
-
-                let mut url = index_url.clone();
-                let mut path = String::from("/");
-                path.push_str(base_segments.join("/").as_str());
-                if !path.ends_with('/') {
-                    path.push('/');
-                }
-                url.set_path(path.as_str());
-                url.set_query(None);
-                url.set_fragment(None);
-                return Ok(url);
-            }
-        }
-
-        index_url.join("./").map_err(|err| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                format!("derive casync chunk store URL from {index_url}: {err}"),
-            )
-        })
     }
 
     async fn size_bytes_for_reader(reader: Arc<dyn BlockReader>) -> GibbloxResult<u64> {

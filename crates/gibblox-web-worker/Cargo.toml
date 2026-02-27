@@ -14,20 +14,11 @@ gibblox-core = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-channel = "0.3.31"
 futures-util = { workspace = true, features = ["alloc", "async-await"] }
-gibblox-android-sparse = { workspace = true }
 gibblox-blockreader-messageport = { workspace = true }
-gibblox-cache = { workspace = true }
-gibblox-cache-store-opfs = { workspace = true }
-gibblox-casync = { workspace = true }
-gibblox-casync-web = { workspace = true }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
-gibblox-http = { path = "../gibblox-http", version = "0.0.1-rc.8", default-features = false, features = ["wasm-client"] }
-gibblox-mbr = { workspace = true }
-gibblox-pipeline = { workspace = true }
-gibblox-xz = { workspace = true }
+gibblox-pipeline = { workspace = true, features = ["web"] }
 js-sys = { workspace = true }
 tracing = "0.1.41"
-url = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = ["DedicatedWorkerGlobalScope", "Event", "MessageChannel", "MessageEvent", "MessagePort", "Worker"] }
