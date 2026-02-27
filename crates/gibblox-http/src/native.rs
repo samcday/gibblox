@@ -5,6 +5,7 @@ use http::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::Client as ReqwestClient;
 use reqwest::StatusCode;
 use std::ops::RangeInclusive;
+use std::time::Instant;
 use url::Url;
 
 const READ_RANGE_MAX_ATTEMPTS: usize = 3;
@@ -31,6 +32,7 @@ impl Client {
 
     pub async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
         tracing::debug!(%url, "http probe range");
+        let start = Instant::now();
         let resp = self
             .inner
             .get(url.as_str())
@@ -38,35 +40,59 @@ impl Client {
             .send()
             .await
             .map_err(|err| HttpError::Msg(format!("probe GET: {err}")))?;
-        tracing::debug!(status = %resp.status(), "http probe response");
+        let status = resp.status();
+        tracing::debug!(status = %status, "http probe response");
         if let Some(len) = resp
             .headers()
             .get(CONTENT_RANGE)
             .and_then(|h| h.to_str().ok())
             .and_then(parse_content_range_total)
         {
+            tracing::debug!(
+                %url,
+                status = %status,
+                size_bytes = len,
+                elapsed_ms = start.elapsed().as_millis(),
+                "http probe response completed"
+            );
             return Ok(len);
         }
-        if resp.status().is_success() {
+        if status.is_success() {
             if let Some(len) = resp
                 .headers()
                 .get(CONTENT_LENGTH)
                 .and_then(|h| h.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
             {
+                tracing::debug!(
+                    %url,
+                    status = %status,
+                    size_bytes = len,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "http probe response completed"
+                );
                 return Ok(len);
             }
         }
         // Final fallback: HEAD
+        let head_start = Instant::now();
         let head = self.inner.head(url.as_str()).send().await;
         if let Ok(resp) = head {
-            if resp.status().is_success() {
+            let status = resp.status();
+            if status.is_success() {
                 if let Some(len) = resp
                     .headers()
                     .get(CONTENT_LENGTH)
                     .and_then(|h| h.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok())
                 {
+                    tracing::debug!(
+                        %url,
+                        status = %status,
+                        size_bytes = len,
+                        elapsed_ms = head_start.elapsed().as_millis(),
+                        "http probe response completed"
+                    );
                     return Ok(len);
                 }
             }
@@ -89,6 +115,7 @@ impl Client {
         let mut last_err = HttpError::Msg("range read did not run".into());
 
         for attempt in 1..=READ_RANGE_MAX_ATTEMPTS {
+            let response_start = Instant::now();
             let response = self
                 .inner
                 .get(url.as_str())
@@ -188,6 +215,16 @@ impl Client {
             }
 
             buf[..expected_len].copy_from_slice(&bytes);
+            tracing::debug!(
+                attempt,
+                %url,
+                status = %status,
+                start,
+                end,
+                read = expected_len,
+                elapsed_ms = response_start.elapsed().as_millis(),
+                "http read response completed"
+            );
             tracing::trace!(
                 attempt,
                 read = expected_len,

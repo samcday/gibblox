@@ -8,6 +8,7 @@ use std::{
     ops::RangeInclusive,
     pin::Pin,
     task::{Context, Poll},
+    time::Instant,
 };
 use url::Url;
 use wasm_bindgen::{JsCast, JsValue};
@@ -70,32 +71,57 @@ impl Client {
 
     pub async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
         // Prefer a ranged GET to coax Content-Range, fall back to HEAD/Content-Length.
+        let start = Instant::now();
         let resp = self
             .send_request(url, Some("bytes=0-0"), "GET", ReadContext::FOREGROUND)
             .await
             .map_err(|err| HttpError::Msg(format!("probe request: {err}")))?;
-        tracing::debug!(%url, status = resp.status(), "http probe response");
+        let status = resp.status();
+        tracing::debug!(%url, status = status, "http probe response");
         let headers = resp.headers();
         if let Ok(Some(val)) = headers.get(CONTENT_RANGE.as_str()) {
             if let Some(len) = parse_content_range_total(&val) {
+                tracing::debug!(
+                    %url,
+                    status = status,
+                    size_bytes = len,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "http probe response completed"
+                );
                 return Ok(len);
             }
         }
         if resp.ok() {
             if let Ok(Some(val)) = headers.get(CONTENT_LENGTH.as_str()) {
                 if let Ok(len) = val.parse::<u64>() {
+                    tracing::debug!(
+                        %url,
+                        status = status,
+                        size_bytes = len,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "http probe response completed"
+                    );
                     return Ok(len);
                 }
             }
         }
         // Final fallback: HEAD (best effort)
+        let head_start = Instant::now();
         let resp = self
             .send_request(url, None, "HEAD", ReadContext::FOREGROUND)
             .await
             .map_err(|err| HttpError::Msg(format!("probe HEAD: {err}")))?;
         if resp.ok() {
+            let status = resp.status();
             if let Ok(Some(val)) = resp.headers().get(CONTENT_LENGTH.as_str()) {
                 if let Ok(len) = val.parse::<u64>() {
+                    tracing::debug!(
+                        %url,
+                        status = status,
+                        size_bytes = len,
+                        elapsed_ms = head_start.elapsed().as_millis(),
+                        "http probe response completed"
+                    );
                     return Ok(len);
                 }
             }
@@ -117,6 +143,7 @@ impl Client {
         let mut last_err = HttpError::Msg("range read did not run".into());
 
         for attempt in 1..=READ_RANGE_MAX_ATTEMPTS {
+            let attempt_start = Instant::now();
             let resp = match self.send_request(url, Some(&header), "GET", ctx).await {
                 Ok(resp) => resp,
                 Err(err) => {
@@ -248,6 +275,18 @@ impl Client {
             }
 
             array.copy_to(&mut buf[..expected_len]);
+            tracing::debug!(
+                attempt,
+                %url,
+                status,
+                start,
+                end,
+                read,
+                elapsed_ms = attempt_start.elapsed().as_millis(),
+                content_range = ?content_range,
+                content_length = ?content_length,
+                "http read response completed"
+            );
             tracing::trace!(
                 attempt,
                 read = expected_len,
