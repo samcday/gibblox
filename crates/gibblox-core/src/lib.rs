@@ -14,7 +14,8 @@ mod gpt;
 mod lru;
 mod paged;
 
-pub use byte_range::ByteRangeReader;
+pub use byte_range::AlignedByteReader;
+pub use byte_range::AlignedByteReader as ByteRangeReader;
 pub use gpt::{GptBlockReader, GptPartitionSelector};
 pub use lru::{LruBlockReader, LruConfig};
 pub use paged::{PagedBlockConfig, PagedBlockReader};
@@ -235,6 +236,101 @@ impl ReadContext {
     pub const BACKGROUND: Self = Self {
         priority: ReadPriority::Low,
     };
+}
+
+#[async_trait]
+pub trait ByteReader: Send + Sync {
+    /// Logical block size in bytes used when adapting this byte reader into a block reader.
+    fn block_size(&self) -> u32;
+
+    /// Total source size in bytes.
+    async fn size_bytes(&self) -> GibbloxResult<u64>;
+
+    /// Write a stable, canonical identity string for this byte reader.
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result;
+
+    /// Read bytes starting at `offset` into `buf`.
+    async fn read_at(&self, offset: u64, buf: &mut [u8], ctx: ReadContext) -> GibbloxResult<usize>;
+}
+
+#[async_trait]
+impl<T> BlockReader for T
+where
+    T: ByteReader + ?Sized,
+{
+    fn block_size(&self) -> u32 {
+        ByteReader::block_size(self)
+    }
+
+    async fn total_blocks(&self) -> GibbloxResult<u64> {
+        let block_size = ByteReader::block_size(self);
+        if block_size == 0 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero",
+            ));
+        }
+        Ok(ByteReader::size_bytes(self)
+            .await?
+            .div_ceil(block_size as u64))
+    }
+
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        ByteReader::write_identity(self, out)
+    }
+
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let block_size = ByteReader::block_size(self);
+        if block_size == 0 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero",
+            ));
+        }
+        if !buf.len().is_multiple_of(block_size as usize) {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "buffer length must align to block size",
+            ));
+        }
+
+        let total_blocks = BlockReader::total_blocks(self).await?;
+        if lba >= total_blocks {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "requested block out of range",
+            ));
+        }
+
+        let offset = lba.checked_mul(block_size as u64).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
+        })?;
+        let size_bytes = ByteReader::size_bytes(self).await?;
+        let available = size_bytes.checked_sub(offset).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset out of range")
+        })?;
+        let read_len = (buf.len() as u64).min(available) as usize;
+        let read = ByteReader::read_at(self, offset, &mut buf[..read_len], ctx).await?;
+        if read != read_len {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::Io,
+                "short read from byte source",
+            ));
+        }
+        if read_len < buf.len() {
+            buf[read_len..].fill(0);
+        }
+        Ok(buf.len())
+    }
 }
 
 #[async_trait]
