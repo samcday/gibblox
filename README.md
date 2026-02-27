@@ -19,16 +19,38 @@ other boring-ass use case that calls for some blocks. gibblox doesn't discrimina
 gibblox has a vision for a perfectly just and fair block-ocracy. You will be assimilated.
 To gibblox you will always be just another block.
 
+## Quickstart
+
+gibblox is primarily intended to be consumed as a library. It also offers
+a simple CLI:
+
+```sh
+# gibblox hasn't had a release yet, hence the funny version specifier
+cargo install 'gibblox-cli@>=0.0.1-rc'
+
+# alternatively, use binstall if your CPU needs a break and you don't mind
+# me mining some cryptos on your machine (thanks for that, btw ❤️)
+cargo binstall 'gibblox-cli@>=0.0.1-rc'
+```
+
+Use this CLI work with the pipeline schema, as well as testing the data
+path:
+
+```sh
+# create a pipeline that fetches a remote file
+gibblox pipeline encode <<HERE > /tmp/pipeline.bin
+http: https://boot.ipxe.org/ipxe.iso
+HERE
+
+# run that pipeline
+gibblox /tmp/pipeline.bin > /tmp/ipxe.iso
+```
+
 ## Goals
 - Provide a single, read-only `BlockReader` abstraction for block-aligned I/O.
 - Support HTTP Range reads on native and wasm targets.
 - Offer a file-backed cache layer with in-flight coalescing.
 - Keep core crates `no_std + alloc` where practical.
-
-## Install CLI
-- `cargo binstall gibblox-cli`
-- Release candidates are installable with an explicit version, for example `cargo binstall gibblox-cli --version 0.0.1-rc.1`.
-- Prebuilt release archives are published for Linux (`x86_64-unknown-linux-gnu`), macOS (`x86_64-apple-darwin`, `aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`).
 
 ## Crates
 - `gobblytes-core`: core filesystem abstraction traits, OSTree wrapper, and test helpers.
