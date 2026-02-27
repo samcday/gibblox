@@ -6,7 +6,7 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use gibblox_core::{
     AlignedByteReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
-    GibbloxResult, ReadContext,
+    GibbloxResult, ReadContext, WindowBlockReader,
 };
 use tracing::{info, trace};
 
@@ -59,10 +59,8 @@ impl BlockReaderConfigIdentity for IsoFileBlockReaderConfig {
 
 /// File-backed block reader sourced from a file inside an ISO9660 image.
 pub struct IsoFileBlockReader {
-    block_size: u32,
     file_size_bytes: u64,
-    file_offset_bytes: u64,
-    byte_reader: AlignedByteReader,
+    file_reader: WindowBlockReader<Arc<dyn BlockReader>>,
     config: IsoFileBlockReaderConfig,
 }
 
@@ -182,12 +180,18 @@ impl IsoFileBlockReader {
             ));
         }
 
+        let file_reader = WindowBlockReader::new(
+            Arc::clone(&source),
+            file_offset_bytes,
+            file_size_bytes,
+            config.block_size,
+        )
+        .await?;
+
         info!(path = %config.path, file_size_bytes, "resolved file inode from ISO9660");
         Ok(Self {
-            block_size: config.block_size,
             file_size_bytes,
-            file_offset_bytes,
-            byte_reader,
+            file_reader,
             config,
         })
     }
@@ -204,11 +208,11 @@ impl IsoFileBlockReader {
 #[async_trait]
 impl BlockReader for IsoFileBlockReader {
     fn block_size(&self) -> u32 {
-        self.block_size
+        self.file_reader.block_size()
     }
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
-        Ok(self.file_size_bytes.div_ceil(self.block_size as u64))
+        self.file_reader.total_blocks().await
     }
 
     fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
@@ -219,46 +223,16 @@ impl BlockReader for IsoFileBlockReader {
         &self,
         lba: u64,
         buf: &mut [u8],
-        _ctx: ReadContext,
+        ctx: ReadContext,
     ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if !buf.len().is_multiple_of(self.block_size as usize) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must align to block size",
-            ));
-        }
-
-        let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-        })?;
-        if offset >= self.file_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            ));
-        }
-
-        let read_len = ((buf.len() as u64).min(self.file_size_bytes - offset)) as usize;
-        let source_offset = self.file_offset_bytes.checked_add(offset).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
-        })?;
-
+        let read = self.file_reader.read_blocks(lba, buf, ctx).await?;
         trace!(
             lba,
-            offset,
             requested = buf.len(),
+            read,
             "reading file blocks from ISO9660"
         );
-        self.byte_reader
-            .read_exact_at(source_offset, &mut buf[..read_len], ReadContext::FOREGROUND)
-            .await?;
-        if read_len < buf.len() {
-            buf[read_len..].fill(0);
-        }
-        Ok(buf.len())
+        Ok(read)
     }
 }
 

@@ -11,7 +11,7 @@ use bytemuck::try_from_bytes;
 use core::fmt;
 use gibblox_core::{
     AlignedByteReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
-    GibbloxResult, ReadContext,
+    GibbloxResult, ReadContext, WindowBlockReader,
 };
 use hadris_part::mbr::MasterBootRecord;
 use tracing::{info, trace};
@@ -106,12 +106,10 @@ impl BlockReaderConfigIdentity for MbrBlockReaderConfig {
 }
 
 pub struct MbrBlockReader {
-    block_size: u32,
     partition_size_bytes: u64,
     partition_index: u32,
     partition_partuuid: String,
-    byte_reader: AlignedByteReader,
-    partition_offset_bytes: u64,
+    partition_reader: WindowBlockReader<Arc<dyn BlockReader>>,
     config: MbrBlockReaderConfig,
 }
 
@@ -193,6 +191,14 @@ impl MbrBlockReader {
             ));
         }
 
+        let partition_reader = WindowBlockReader::new(
+            Arc::clone(&source),
+            partition_offset_bytes,
+            partition_size_bytes,
+            config.block_size,
+        )
+        .await?;
+
         let partition_number = u8::try_from(selected.index + 1).map_err(|_| {
             GibbloxError::with_message(
                 GibbloxErrorKind::OutOfRange,
@@ -211,12 +217,10 @@ impl MbrBlockReader {
         );
 
         Ok(Self {
-            block_size: config.block_size,
             partition_size_bytes,
             partition_index: selected.index,
             partition_partuuid,
-            byte_reader,
-            partition_offset_bytes,
+            partition_reader,
             config,
         })
     }
@@ -241,11 +245,11 @@ impl MbrBlockReader {
 #[async_trait]
 impl BlockReader for MbrBlockReader {
     fn block_size(&self) -> u32 {
-        self.block_size
+        self.partition_reader.block_size()
     }
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
-        Ok(self.partition_size_bytes.div_ceil(self.block_size as u64))
+        self.partition_reader.total_blocks().await
     }
 
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
@@ -258,48 +262,14 @@ impl BlockReader for MbrBlockReader {
         buf: &mut [u8],
         ctx: ReadContext,
     ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if !buf.len().is_multiple_of(self.block_size as usize) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must align to block size",
-            ));
-        }
-
-        let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-        })?;
-        if offset >= self.partition_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            ));
-        }
-
-        let read_len = ((buf.len() as u64).min(self.partition_size_bytes - offset)) as usize;
-        let source_offset = self
-            .partition_offset_bytes
-            .checked_add(offset)
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
-            })?;
-
+        let read = self.partition_reader.read_blocks(lba, buf, ctx).await?;
         trace!(
             lba,
-            offset,
             requested = buf.len(),
-            read_len,
+            read,
             "reading partition blocks from MBR"
         );
-        self.byte_reader
-            .read_exact_at(source_offset, &mut buf[..read_len], ctx)
-            .await?;
-        if read_len < buf.len() {
-            buf[read_len..].fill(0);
-        }
-        Ok(buf.len())
+        Ok(read)
     }
 }
 
