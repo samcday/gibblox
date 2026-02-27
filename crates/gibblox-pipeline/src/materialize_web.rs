@@ -8,8 +8,8 @@ use gibblox_cache_store_opfs::OpfsCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
 use gibblox_casync_web::{WebCasyncChunkStore, WebCasyncChunkStoreConfig, WebCasyncIndexSource};
 use gibblox_core::{
-    BlockByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, GptBlockReader,
-    GptPartitionSelector,
+    AlignedByteReader, BlockByteReader, BlockReader, ByteReader, GibbloxError, GibbloxErrorKind,
+    GibbloxResult, GptBlockReader, GptPartitionSelector,
 };
 use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
@@ -19,6 +19,9 @@ use url::Url;
 
 use crate::materialize_common::derive_casync_chunk_store_url;
 use crate::{PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string};
+
+type DynBlockReader = Arc<dyn BlockReader>;
+type DynByteReader = Arc<dyn ByteReader>;
 
 #[derive(Clone, Debug)]
 pub struct OpenPipelineOptions {
@@ -38,14 +41,14 @@ impl Default for OpenPipelineOptions {
 pub async fn open_pipeline(
     source: &PipelineSource,
     opts: &OpenPipelineOptions,
-) -> GibbloxResult<Arc<dyn BlockReader>> {
+) -> GibbloxResult<DynBlockReader> {
     resolve_pipeline_source(source, opts).await
 }
 
 fn resolve_pipeline_source<'a>(
     pipeline_source: &'a PipelineSource,
     opts: &'a OpenPipelineOptions,
-) -> Pin<Box<dyn Future<Output = GibbloxResult<Arc<dyn BlockReader>>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = GibbloxResult<DynBlockReader>> + 'a>> {
     Box::pin(async move {
         match pipeline_source {
             PipelineSource::Http(source) => resolve_http_source(source, opts).await,
@@ -60,11 +63,12 @@ fn resolve_pipeline_source<'a>(
                 resolve_casync_source(source, source_identity(pipeline_source), opts).await
             }
             PipelineSource::Xz(source) => {
-                let upstream = resolve_pipeline_source(source.xz.as_ref(), opts).await?;
+                let upstream = resolve_pipeline_byte_source(source.xz.as_ref(), opts).await?;
                 let config = XzBlockReaderConfig::default()
                     .with_source_identity(source_identity(source.xz.as_ref()));
-                let reader = XzBlockReader::open_with_block_config(upstream, config).await?;
-                let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                let reader = XzBlockReader::open_with_byte_reader_config(upstream, config).await?;
+                let reader = BlockByteReader::new(reader, opts.image_block_size)?;
+                let reader: DynBlockReader = Arc::new(reader);
                 Ok(reader)
             }
             PipelineSource::AndroidSparseImg(source) => {
@@ -97,10 +101,38 @@ fn resolve_pipeline_source<'a>(
     })
 }
 
+fn resolve_pipeline_byte_source<'a>(
+    pipeline_source: &'a PipelineSource,
+    opts: &'a OpenPipelineOptions,
+) -> Pin<Box<dyn Future<Output = GibbloxResult<DynByteReader>> + 'a>> {
+    Box::pin(async move {
+        match pipeline_source {
+            PipelineSource::Http(source) => {
+                let url = parse_url(source.http.as_str(), "pipeline http source")?;
+                let config = HttpReaderConfig::new(url, opts.image_block_size);
+                let reader = HttpReader::open(config).await?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            PipelineSource::Xz(source) => {
+                let upstream = resolve_pipeline_byte_source(source.xz.as_ref(), opts).await?;
+                let config = XzBlockReaderConfig::default()
+                    .with_source_identity(source_identity(source.xz.as_ref()));
+                let reader = XzBlockReader::open_with_byte_reader_config(upstream, config).await?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            _ => {
+                let upstream = resolve_pipeline_source(pipeline_source, opts).await?;
+                let reader = AlignedByteReader::new(upstream).await?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+        }
+    })
+}
+
 async fn resolve_http_source(
     source: &crate::PipelineSourceHttpSource,
     opts: &OpenPipelineOptions,
-) -> GibbloxResult<Arc<dyn BlockReader>> {
+) -> GibbloxResult<DynBlockReader> {
     let url = parse_url(source.http.as_str(), "pipeline http source")?;
     let config = HttpReaderConfig::new(url, opts.image_block_size);
     let reader = BlockByteReader::new(

@@ -83,9 +83,11 @@ fn open_pipeline_source<'a>(
             PipelineSource::Casync(source) => open_casync_source(&source.casync, opts).await,
             PipelineSource::Xz(source) => {
                 let upstream = open_pipeline_byte_source(source.xz.as_ref(), opts).await?;
-                let reader = XzBlockReader::new_from_byte_reader(upstream, opts.image_block_size)
+                let xz_reader = XzBlockReader::new_from_byte_reader(upstream)
                     .await
                     .map_err(|err| anyhow!("open xz reader: {err}"))?;
+                let reader = BlockByteReader::new(xz_reader, opts.image_block_size)
+                    .map_err(|err| anyhow!("open xz block view: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::AndroidSparseImg(source) => {
@@ -163,7 +165,7 @@ fn open_pipeline_byte_source<'a>(
             }
             PipelineSource::Xz(source) => {
                 let upstream = open_pipeline_byte_source(source.xz.as_ref(), opts).await?;
-                let reader = XzBlockReader::new_from_byte_reader(upstream, opts.image_block_size)
+                let reader = XzBlockReader::new_from_byte_reader(upstream)
                     .await
                     .map_err(|err| anyhow!("open xz byte reader: {err}"))?;
                 Ok(Arc::new(reader) as DynByteReader)
