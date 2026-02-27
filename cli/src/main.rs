@@ -14,7 +14,9 @@ use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
-use gibblox_core::{BlockReader, GptBlockReader, GptPartitionSelector, ReadContext};
+use gibblox_core::{
+    BlockByteReader, BlockReader, GptBlockReader, GptPartitionSelector, ReadContext,
+};
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
@@ -216,6 +218,8 @@ fn open_pipeline_source<'a>(
                 let reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
+                let reader = BlockByteReader::new(reader, DEFAULT_IMAGE_BLOCK_SIZE)
+                    .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::File(source) => {

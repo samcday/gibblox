@@ -130,10 +130,6 @@ impl HttpBlockReader {
 
 #[async_trait]
 impl ByteReader for HttpBlockReader {
-    fn block_size(&self) -> u32 {
-        self.config.block_size
-    }
-
     async fn size_bytes(&self) -> GibbloxResult<u64> {
         Ok(self.size_bytes)
     }
