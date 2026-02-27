@@ -14,8 +14,8 @@ use core::{
 };
 use crc32fast::Hasher;
 use gibblox_core::{
-    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
-    ReadContext,
+    AlignedByteReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
+    GibbloxResult, ReadContext,
 };
 use tracing::{debug, trace};
 use xz4rust::{DICT_SIZE_MAX, DICT_SIZE_MIN, XzDecoder, XzNextBlockResult};
@@ -167,7 +167,7 @@ pub struct XzBlockReader {
     stream_header: [u8; XZ_HEADER_LEN],
     stream_flags: [u8; 2],
     blocks: Vec<XzIndexedBlock>,
-    byte_reader: ByteReader,
+    byte_reader: AlignedByteReader,
     config: XzReaderConfig,
     identity_config: XzBlockReaderConfig,
     decoded_cache: Mutex<DecodedCacheState>,
@@ -235,8 +235,7 @@ impl XzBlockReader {
             ));
         }
 
-        let byte_reader =
-            ByteReader::new(Arc::clone(&source), block_size as usize, logical_size_bytes);
+        let byte_reader = AlignedByteReader::new(Arc::clone(&source)).await?;
         let stream_header_vec = byte_reader
             .read_vec_at(0, XZ_HEADER_LEN, ReadContext::FOREGROUND)
             .await?;
@@ -573,116 +572,8 @@ impl BlockReader for XzBlockReader {
     }
 }
 
-#[derive(Clone)]
-struct ByteReader {
-    inner: Arc<dyn BlockReader>,
-    block_size: usize,
-    size_bytes: u64,
-}
-
-impl ByteReader {
-    fn new(inner: Arc<dyn BlockReader>, block_size: usize, size_bytes: u64) -> Self {
-        Self {
-            inner,
-            block_size,
-            size_bytes,
-        }
-    }
-
-    async fn read_vec_at(
-        &self,
-        offset: u64,
-        len: usize,
-        ctx: ReadContext,
-    ) -> GibbloxResult<Vec<u8>> {
-        let mut out = vec![0u8; len];
-        self.read_exact_at(offset, &mut out, ctx).await?;
-        Ok(out)
-    }
-
-    async fn read_exact_at(
-        &self,
-        offset: u64,
-        out: &mut [u8],
-        ctx: ReadContext,
-    ) -> GibbloxResult<()> {
-        if out.is_empty() {
-            return Ok(());
-        }
-
-        let end = offset.checked_add(out.len() as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "byte read range overflow")
-        })?;
-        if end > self.size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "byte read exceeds source size",
-            ));
-        }
-
-        let bs = self.block_size as u64;
-        if offset.is_multiple_of(bs) && out.len().is_multiple_of(self.block_size) {
-            self.read_full_blocks(offset / bs, out, ctx).await?;
-            return Ok(());
-        }
-
-        let start_lba = offset / bs;
-        let start_skip = (offset % bs) as usize;
-        let aligned_end = end.div_ceil(bs);
-        let aligned_blocks = aligned_end.saturating_sub(start_lba);
-        let aligned_blocks_usize = usize::try_from(aligned_blocks).map_err(|_| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "aligned read too large")
-        })?;
-        let aligned_len = aligned_blocks_usize
-            .checked_mul(self.block_size)
-            .ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "aligned read size overflow",
-                )
-            })?;
-
-        let mut scratch = vec![0u8; aligned_len];
-        self.read_full_blocks(start_lba, &mut scratch, ctx).await?;
-        let end_skip = start_skip.checked_add(out.len()).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "aligned slice overflow")
-        })?;
-        out.copy_from_slice(&scratch[start_skip..end_skip]);
-        Ok(())
-    }
-
-    async fn read_full_blocks(
-        &self,
-        lba: u64,
-        out: &mut [u8],
-        ctx: ReadContext,
-    ) -> GibbloxResult<()> {
-        if out.is_empty() {
-            return Ok(());
-        }
-        if !out.len().is_multiple_of(self.block_size) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "internal byte reader requested unaligned buffer",
-            ));
-        }
-
-        let read = self.inner.read_blocks(lba, out, ctx).await?;
-        if read != out.len() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::Io,
-                format!(
-                    "source returned short read: expected {}, got {read}",
-                    out.len()
-                ),
-            ));
-        }
-        Ok(())
-    }
-}
-
 async fn locate_stream_layout(
-    byte_reader: &ByteReader,
+    byte_reader: &AlignedByteReader,
     logical_size_bytes: u64,
     expected_stream_flags: [u8; 2],
     footer_scan_window_bytes: usize,
@@ -694,7 +585,9 @@ async fn locate_stream_layout(
         ));
     }
 
-    let min_scan = byte_reader.block_size.saturating_mul(4).max(XZ_FOOTER_LEN);
+    let min_scan = (byte_reader.block_size() as usize)
+        .saturating_mul(4)
+        .max(XZ_FOOTER_LEN);
     let scan_window = footer_scan_window_bytes.max(min_scan);
     let scan_window_u64 = scan_window as u64;
     let footer_overlap = (XZ_FOOTER_LEN - 1) as u64;
