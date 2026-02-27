@@ -83,10 +83,6 @@ impl AlignedByteReader {
 
 #[async_trait::async_trait]
 impl ByteReader for AlignedByteReader {
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
     async fn size_bytes(&self) -> GibbloxResult<u64> {
         Ok(self.size_bytes)
     }
