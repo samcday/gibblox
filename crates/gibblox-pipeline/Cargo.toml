@@ -14,6 +14,7 @@ std = [
     "gibblox-core/std",
     "gibblox-casync/std",
     "gibblox-xz/std",
+    "gibblox-http/native-client",
     "dep:anyhow",
     "dep:gibblox-android-sparse",
     "dep:gibblox-casync",
@@ -24,19 +25,41 @@ std = [
     "dep:gibblox-xz",
     "dep:url",
 ]
+web = [
+    "serde/std",
+    "gibblox-core/std",
+    "gibblox-casync/std",
+    "gibblox-xz/std",
+    "gibblox-http/native-client",
+    "gibblox-http/wasm-client",
+    "dep:gibblox-android-sparse",
+    "dep:gibblox-cache",
+    "dep:gibblox-cache-store-opfs",
+    "dep:gibblox-casync",
+    "dep:gibblox-casync-web",
+    "dep:gibblox-http",
+    "dep:gibblox-mbr",
+    "dep:gibblox-xz",
+    "dep:tracing",
+    "dep:url",
+]
 
 [dependencies]
 anyhow = { version = "1.0.95", optional = true }
 gibblox-android-sparse = { workspace = true, features = ["std"], optional = true }
+gibblox-cache = { workspace = true, optional = true }
+gibblox-cache-store-opfs = { workspace = true, optional = true }
 gibblox-casync = { workspace = true, features = ["std"], optional = true }
 gibblox-casync-std = { workspace = true, optional = true }
+gibblox-casync-web = { workspace = true, optional = true }
 gibblox-core = { workspace = true }
 gibblox-file = { workspace = true, optional = true }
-gibblox-http = { workspace = true, optional = true }
+gibblox-http = { path = "../gibblox-http", version = "0.0.1-rc.10", default-features = false, optional = true }
 gibblox-mbr = { workspace = true, optional = true }
 gibblox-xz = { workspace = true, features = ["std"], optional = true }
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 serde = { version = "1.0.217", default-features = false, features = ["derive", "alloc"] }
+tracing = { version = "0.1.41", optional = true }
 url = { workspace = true, optional = true }
 
 [dev-dependencies]
