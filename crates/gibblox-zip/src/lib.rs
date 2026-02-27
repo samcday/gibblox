@@ -14,7 +14,7 @@ use alloc::{
 use async_trait::async_trait;
 use gibblox_core::{
     BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
-    ReadContext,
+    ReadContext, WindowBlockReader,
 };
 use tracing::trace;
 
@@ -61,10 +61,8 @@ impl BlockReaderConfigIdentity for ZipEntryBlockReaderConfig {
 
 /// Block reader that exposes a single file entry from a ZIP archive.
 pub struct ZipEntryBlockReader {
-    block_size: u32,
     entry_size_bytes: u64,
-    entry_data_offset: u64,
-    byte_reader: ByteReader,
+    entry_reader: WindowBlockReader<Arc<dyn BlockReader>>,
     config: ZipEntryBlockReaderConfig,
 }
 
@@ -117,11 +115,17 @@ impl ZipEntryBlockReader {
             ));
         }
 
+        let entry_reader = WindowBlockReader::new(
+            Arc::clone(&source),
+            entry.data_offset,
+            entry.size_bytes,
+            source_block_size,
+        )
+        .await?;
+
         Ok(Self {
-            block_size: source_block_size,
             entry_size_bytes: entry.size_bytes,
-            entry_data_offset: entry.data_offset,
-            byte_reader,
+            entry_reader,
             config,
         })
     }
@@ -138,11 +142,11 @@ impl ZipEntryBlockReader {
 #[async_trait]
 impl BlockReader for ZipEntryBlockReader {
     fn block_size(&self) -> u32 {
-        self.block_size
+        self.entry_reader.block_size()
     }
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
-        Ok(self.entry_size_bytes.div_ceil(self.block_size as u64))
+        self.entry_reader.total_blocks().await
     }
 
     fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
@@ -155,46 +159,15 @@ impl BlockReader for ZipEntryBlockReader {
         buf: &mut [u8],
         ctx: ReadContext,
     ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if !buf.len().is_multiple_of(self.block_size as usize) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must align to block size",
-            ));
-        }
-
-        let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-        })?;
-        if offset >= self.entry_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            ));
-        }
-
-        let read_len = ((buf.len() as u64).min(self.entry_size_bytes - offset)) as usize;
+        let read = self.entry_reader.read_blocks(lba, buf, ctx).await?;
         trace!(
             lba,
             compression_method = STORED_COMPRESSION_METHOD,
             requested = buf.len(),
-            read_len,
+            read,
             "reading zip entry blocks"
         );
-
-        let source_offset = self.entry_data_offset.checked_add(offset).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "zip entry offset overflow")
-        })?;
-        self.byte_reader
-            .read_exact_at(source_offset, &mut buf[..read_len], ctx)
-            .await?;
-
-        if read_len < buf.len() {
-            buf[read_len..].fill(0);
-        }
-        Ok(buf.len())
+        Ok(read)
     }
 }
 
