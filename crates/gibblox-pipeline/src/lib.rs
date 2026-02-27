@@ -17,6 +17,12 @@ use crate::bin::{
 
 pub mod bin;
 
+#[cfg(feature = "std")]
+mod materialize_std;
+
+#[cfg(feature = "std")]
+pub use materialize_std::{OpenPipelineOptions, open_pipeline};
+
 #[derive(Debug)]
 pub enum PipelineCodecError {
     Decode(postcard::Error),

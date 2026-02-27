@@ -737,18 +737,10 @@ version = "0.0.1-rc.10"
 dependencies = [
  "anyhow",
  "clap",
- "gibblox-android-sparse",
- "gibblox-casync",
- "gibblox-casync-std",
  "gibblox-core",
- "gibblox-file",
- "gibblox-http",
- "gibblox-mbr",
  "gibblox-pipeline",
- "gibblox-xz",
  "serde_yaml",
  "tokio",
- "url",
 ]
 
 [[package]]
@@ -833,10 +825,19 @@ dependencies = [
 name = "gibblox-pipeline"
 version = "0.0.1-rc.10"
 dependencies = [
+ "anyhow",
+ "gibblox-android-sparse",
+ "gibblox-casync",
+ "gibblox-casync-std",
  "gibblox-core",
+ "gibblox-file",
+ "gibblox-http",
+ "gibblox-mbr",
+ "gibblox-xz",
  "postcard",
  "serde",
  "serde_yaml",
+ "url",
 ]
 
 [[package]]
