@@ -72,22 +72,22 @@ enum PipelineCommand {
 
 #[derive(Args)]
 struct PipelineEncodeArgs {
-    /// Input YAML file.
-    #[arg(value_name = "INPUT")]
-    input: PathBuf,
-    /// Output binary file.
-    #[arg(short = 'o', long)]
-    output: PathBuf,
+    /// Input YAML file ("-" for stdin).
+    #[arg(value_name = "INPUT", default_value = "-")]
+    input: String,
+    /// Output binary file ("-" for stdout).
+    #[arg(short = 'o', long, default_value = "-")]
+    output: String,
 }
 
 #[derive(Args)]
 struct PipelineDecodeArgs {
-    /// Input binary file.
-    #[arg(value_name = "INPUT")]
-    input: PathBuf,
-    /// Output YAML file.
-    #[arg(short = 'o', long)]
-    output: PathBuf,
+    /// Input binary file ("-" for stdin).
+    #[arg(value_name = "INPUT", default_value = "-")]
+    input: String,
+    /// Output YAML file ("-" for stdout).
+    #[arg(short = 'o', long, default_value = "-")]
+    output: String,
 }
 
 #[derive(Args)]
@@ -147,26 +147,22 @@ fn run_pipeline(command: PipelineCommand) -> Result<()> {
 fn run_pipeline_encode(args: PipelineEncodeArgs) -> Result<()> {
     let source = read_pipeline_yaml(&args.input)?;
     validate_pipeline(&source)
-        .with_context(|| format!("validate pipeline from YAML input {}", args.input.display()))?;
+        .with_context(|| format!("validate pipeline from YAML input {}", args.input))?;
 
     let encoded = encode_pipeline(&source).context("encode pipeline binary")?;
-    fs::write(&args.output, encoded)
-        .with_context(|| format!("write pipeline binary output {}", args.output.display()))?;
-    Ok(())
+    write_binary_output(&args.output, &encoded, "gibblox pipeline encode")
 }
 
 fn run_pipeline_decode(args: PipelineDecodeArgs) -> Result<()> {
-    let bytes = fs::read(&args.input)
-        .with_context(|| format!("read pipeline binary input {}", args.input.display()))?;
+    let bytes = read_input_bytes(&args.input)
+        .with_context(|| format!("read pipeline binary input {}", args.input))?;
     let source = decode_pipeline(&bytes)
-        .with_context(|| format!("decode pipeline binary input {}", args.input.display()))?;
+        .with_context(|| format!("decode pipeline binary input {}", args.input))?;
     validate_pipeline(&source)
-        .with_context(|| format!("validate decoded pipeline from {}", args.input.display()))?;
+        .with_context(|| format!("validate decoded pipeline from {}", args.input))?;
 
     let yaml = serde_yaml::to_string(&source).context("serialize pipeline as YAML")?;
-    fs::write(&args.output, yaml)
-        .with_context(|| format!("write pipeline YAML output {}", args.output.display()))?;
-    Ok(())
+    write_text_output(&args.output, &yaml)
 }
 
 fn run_pipeline_validate(args: PipelineValidateArgs) -> Result<()> {
@@ -180,17 +176,18 @@ fn run_pipeline_validate(args: PipelineValidateArgs) -> Result<()> {
         return Ok(());
     }
 
-    let source = read_pipeline_yaml(&args.input)?;
+    let input = args.input.to_string_lossy();
+    let source = read_pipeline_yaml(&input)?;
     validate_pipeline(&source)
         .with_context(|| format!("validate pipeline from YAML input {}", args.input.display()))?;
     Ok(())
 }
 
-fn read_pipeline_yaml(path: &Path) -> Result<PipelineSource> {
-    let input = fs::read_to_string(path)
-        .with_context(|| format!("read pipeline YAML input {}", path.display()))?;
-    serde_yaml::from_str(&input)
-        .with_context(|| format!("parse pipeline YAML input {}", path.display()))
+fn read_pipeline_yaml(path: &str) -> Result<PipelineSource> {
+    let input = read_input_bytes(path)
+        .with_context(|| format!("read pipeline YAML input {}", io_label(path)))?;
+    serde_yaml::from_slice(&input)
+        .with_context(|| format!("parse pipeline YAML input {}", io_label(path)))
 }
 
 fn parse_pipeline_document(input: &[u8], label: &str) -> Result<PipelineSource> {
@@ -515,6 +512,33 @@ fn read_input_bytes(path: &str) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("read {}", io_label(path)))
 }
 
+fn write_binary_output(path: &str, output: &[u8], command: &str) -> Result<()> {
+    validate_binary_output(path, command, std::io::stdout().is_terminal())?;
+    if path == "-" {
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(output)
+            .with_context(|| format!("write {command} output bytes to stdout"))?;
+        stdout.flush().context("flush stdout")?;
+        return Ok(());
+    }
+
+    fs::write(path, output).with_context(|| format!("write {command} output {}", io_label(path)))
+}
+
+fn write_text_output(path: &str, output: &str) -> Result<()> {
+    if path == "-" {
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(output.as_bytes())
+            .context("write pipeline decode output to stdout")?;
+        stdout.flush().context("flush stdout")?;
+        return Ok(());
+    }
+
+    fs::write(path, output).with_context(|| format!("write output {}", io_label(path)))
+}
+
 fn validate_binary_output(path: &str, command: &str, stdout_is_tty: bool) -> Result<()> {
     if path == "-" && stdout_is_tty {
         bail!(
@@ -535,8 +559,8 @@ fn io_label(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, parse_casync_chunk_store_locator, parse_casync_index_locator, parse_pipeline_document,
-        validate_binary_output,
+        Cli, PipelineArgs, PipelineCommand, parse_casync_chunk_store_locator,
+        parse_casync_index_locator, parse_pipeline_document, validate_binary_output,
     };
     use clap::Parser;
     use gibblox_casync_std::{StdCasyncChunkStoreLocator, StdCasyncIndexLocator};
@@ -552,6 +576,52 @@ mod tests {
     fn parse_validate_with_positional_input() {
         let cli = Cli::parse_from(["gibblox-cli", "pipeline", "validate", "/tmp/lol"]);
         assert!(matches!(cli.command, Some(super::Commands::Pipeline(_))));
+    }
+
+    #[test]
+    fn parse_pipeline_encode_defaults_to_stdio() {
+        let cli = Cli::parse_from(["gibblox-cli", "pipeline", "encode"]);
+        let super::Commands::Pipeline(PipelineArgs {
+            command: PipelineCommand::Encode(args),
+        }) = cli.command.expect("command is present")
+        else {
+            panic!("expected pipeline encode command")
+        };
+        assert_eq!(args.input, "-");
+        assert_eq!(args.output, "-");
+    }
+
+    #[test]
+    fn parse_pipeline_decode_defaults_to_stdio() {
+        let cli = Cli::parse_from(["gibblox-cli", "pipeline", "decode"]);
+        let super::Commands::Pipeline(PipelineArgs {
+            command: PipelineCommand::Decode(args),
+        }) = cli.command.expect("command is present")
+        else {
+            panic!("expected pipeline decode command")
+        };
+        assert_eq!(args.input, "-");
+        assert_eq!(args.output, "-");
+    }
+
+    #[test]
+    fn parse_pipeline_encode_custom_paths() {
+        let cli = Cli::parse_from([
+            "gibblox-cli",
+            "pipeline",
+            "encode",
+            "in.yaml",
+            "-o",
+            "out.bin",
+        ]);
+        let super::Commands::Pipeline(PipelineArgs {
+            command: PipelineCommand::Encode(args),
+        }) = cli.command.expect("command is present")
+        else {
+            panic!("expected pipeline encode command")
+        };
+        assert_eq!(args.input, "in.yaml");
+        assert_eq!(args.output, "out.bin");
     }
 
     #[test]
