@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-pipeline-pump-web"
-version = "0.0.1-rc.10"
+version = "0.0.1-rc.11"
 dependencies = [
  "axum",
  "console_error_panic_hook",
