@@ -133,3 +133,23 @@ jobs:
             --title "v${version}" \
             --body "Automated bump for v${version}." \
             --base "$base"
+
+  cleanup-merged-release-branch:
+    if: always() && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release/v')
+    needs: [tag-release-pr, next-rc]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete merged release branch
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${HEAD_REF}" >/dev/null 2>&1; then
+            echo "Branch ${HEAD_REF} is already deleted"
+            exit 0
+          fi
+
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${HEAD_REF}" >/dev/null
+          echo "Deleted branch ${HEAD_REF}"
