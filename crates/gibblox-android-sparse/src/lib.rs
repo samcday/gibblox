@@ -6,6 +6,7 @@ extern crate alloc;
 extern crate std;
 
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use async_lock::Mutex;
 use async_trait::async_trait;
 use core::fmt;
 use gibblox_core::{
@@ -50,8 +51,9 @@ impl BlockReaderConfigIdentity for AndroidSparseBlockReaderConfig {
 
 /// Read-only block reader over Android sparse image streams.
 ///
-/// The sparse image header and all chunk headers are parsed and validated up-front
-/// during construction.
+/// The sparse image header is parsed up-front during construction.
+/// Chunk headers are parsed and validated lazily as requested reads advance through
+/// the sparse image.
 pub struct AndroidSparseBlockReader<S> {
     source: S,
     source_block_size: usize,
@@ -59,17 +61,26 @@ pub struct AndroidSparseBlockReader<S> {
     block_size: u32,
     total_blocks: u64,
     expanded_size_bytes: u64,
+    total_chunks: usize,
+    chunk_header_size: u64,
     declared_chunks: u32,
     image_checksum: u32,
-    chunks: Vec<SparseChunk>,
+    chunks: Mutex<SparseChunkState>,
     config: AndroidSparseBlockReaderConfig,
+}
+
+struct SparseChunkState {
+    chunks: Vec<SparseChunk>,
+    next_chunk_index: usize,
+    next_chunk_cursor: u64,
+    output_cursor: u64,
 }
 
 impl<S> AndroidSparseBlockReader<S>
 where
     S: BlockReader,
 {
-    /// Parse and validate an Android sparse stream exposed by `source`.
+    /// Parse sparse headers and initialize lazy chunk parsing for `source`.
     pub async fn new(source: S) -> GibbloxResult<Self> {
         Self::new_with_config(source, AndroidSparseBlockReaderConfig::default()).await
     }
@@ -120,7 +131,7 @@ where
             })?;
 
         let chunk_header_size = u64::from(sparse_header.chunk_hdr_sz);
-        let mut chunk_cursor = u64::from(sparse_header.file_hdr_sz);
+        let chunk_cursor = u64::from(sparse_header.file_hdr_sz);
         if chunk_cursor > source_size_bytes {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::OutOfRange,
@@ -144,190 +155,12 @@ where
         let total_chunks = usize::try_from(total_chunks_u64).map_err(|_| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "chunk count overflow")
         })?;
-        let mut chunks = Vec::with_capacity(total_chunks);
-        let mut output_cursor = 0u64;
-
-        for chunk_index in 0..total_chunks {
-            let mut chunk_header_raw = [0u8; CHUNK_HEADER_LEN];
-            read_source_exact(
-                &source,
-                source_block_size,
-                source_size_bytes,
-                chunk_cursor,
-                &mut chunk_header_raw,
-                ReadContext::FOREGROUND,
-            )
-            .await?;
-            let chunk_header = SparseChunkHeader::parse(&chunk_header_raw);
-
-            let chunk_total_size = u64::from(chunk_header.total_sz);
-            if chunk_total_size < chunk_header_size {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::InvalidInput,
-                    format!("chunk {chunk_index} total size is smaller than chunk header size"),
-                ));
-            }
-
-            let chunk_end = chunk_cursor.checked_add(chunk_total_size).ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    format!("chunk {chunk_index} range overflow"),
-                )
-            })?;
-            if chunk_end > source_size_bytes {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    format!("chunk {chunk_index} exceeds source size"),
-                ));
-            }
-
-            let chunk_payload_offset =
-                chunk_cursor.checked_add(chunk_header_size).ok_or_else(|| {
-                    GibbloxError::with_message(
-                        GibbloxErrorKind::OutOfRange,
-                        format!("chunk {chunk_index} payload offset overflow"),
-                    )
-                })?;
-            let chunk_payload_size = chunk_total_size - chunk_header_size;
-            let chunk_output_bytes = u64::from(chunk_header.chunk_sz)
-                .checked_mul(sparse_block_size as u64)
-                .ok_or_else(|| {
-                    GibbloxError::with_message(
-                        GibbloxErrorKind::OutOfRange,
-                        format!("chunk {chunk_index} output size overflow"),
-                    )
-                })?;
-
-            match chunk_header.chunk_type {
-                CHUNK_TYPE_RAW => {
-                    if chunk_payload_size != chunk_output_bytes {
-                        return Err(GibbloxError::with_message(
-                            GibbloxErrorKind::InvalidInput,
-                            format!(
-                                "chunk {chunk_index} raw payload size mismatch (expected {chunk_output_bytes}, got {chunk_payload_size})"
-                            ),
-                        ));
-                    }
-                    if let Some((output_start, output_end)) = claim_output_span(
-                        &mut output_cursor,
-                        chunk_output_bytes,
-                        expanded_size_bytes,
-                        chunk_index,
-                    )? {
-                        chunks.push(SparseChunk {
-                            output_start,
-                            output_end,
-                            kind: SparseChunkKind::Raw {
-                                source_offset: chunk_payload_offset,
-                            },
-                        });
-                    }
-                }
-                CHUNK_TYPE_FILL => {
-                    if chunk_payload_size != 4 {
-                        return Err(GibbloxError::with_message(
-                            GibbloxErrorKind::InvalidInput,
-                            format!(
-                                "chunk {chunk_index} fill payload size mismatch (expected 4, got {chunk_payload_size})"
-                            ),
-                        ));
-                    }
-
-                    let mut pattern = [0u8; 4];
-                    read_source_exact(
-                        &source,
-                        source_block_size,
-                        source_size_bytes,
-                        chunk_payload_offset,
-                        &mut pattern,
-                        ReadContext::FOREGROUND,
-                    )
-                    .await?;
-
-                    if let Some((output_start, output_end)) = claim_output_span(
-                        &mut output_cursor,
-                        chunk_output_bytes,
-                        expanded_size_bytes,
-                        chunk_index,
-                    )? {
-                        chunks.push(SparseChunk {
-                            output_start,
-                            output_end,
-                            kind: SparseChunkKind::Fill { pattern },
-                        });
-                    }
-                }
-                CHUNK_TYPE_DONT_CARE => {
-                    if chunk_payload_size != 0 {
-                        return Err(GibbloxError::with_message(
-                            GibbloxErrorKind::InvalidInput,
-                            format!(
-                                "chunk {chunk_index} DONT_CARE payload must be empty (got {chunk_payload_size})"
-                            ),
-                        ));
-                    }
-
-                    if let Some((output_start, output_end)) = claim_output_span(
-                        &mut output_cursor,
-                        chunk_output_bytes,
-                        expanded_size_bytes,
-                        chunk_index,
-                    )? {
-                        chunks.push(SparseChunk {
-                            output_start,
-                            output_end,
-                            kind: SparseChunkKind::DontCare,
-                        });
-                    }
-                }
-                CHUNK_TYPE_CRC32 => {
-                    if chunk_header.chunk_sz != 0 {
-                        return Err(GibbloxError::with_message(
-                            GibbloxErrorKind::InvalidInput,
-                            format!("chunk {chunk_index} CRC32 chunk_sz must be zero"),
-                        ));
-                    }
-                    if chunk_payload_size != 4 {
-                        return Err(GibbloxError::with_message(
-                            GibbloxErrorKind::InvalidInput,
-                            format!(
-                                "chunk {chunk_index} CRC32 payload size mismatch (expected 4, got {chunk_payload_size})"
-                            ),
-                        ));
-                    }
-
-                    let mut crc = [0u8; 4];
-                    read_source_exact(
-                        &source,
-                        source_block_size,
-                        source_size_bytes,
-                        chunk_payload_offset,
-                        &mut crc,
-                        ReadContext::FOREGROUND,
-                    )
-                    .await?;
-                }
-                other => {
-                    return Err(GibbloxError::with_message(
-                        GibbloxErrorKind::Unsupported,
-                        format!(
-                            "unsupported sparse chunk type 0x{other:04X} at chunk {chunk_index}"
-                        ),
-                    ));
-                }
-            }
-
-            chunk_cursor = chunk_end;
-        }
-
-        if output_cursor != expanded_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                format!(
-                    "sparse output size mismatch (mapped {output_cursor}, expected {expanded_size_bytes})"
-                ),
-            ));
-        }
+        let chunks = Mutex::new(SparseChunkState {
+            chunks: Vec::new(),
+            next_chunk_index: 0,
+            next_chunk_cursor: chunk_cursor,
+            output_cursor: 0,
+        });
 
         let source_identity = config
             .source_identity
@@ -341,7 +174,7 @@ where
             sparse_block_size,
             total_blocks,
             declared_chunks = sparse_header.total_chunks,
-            mapped_chunks = chunks.len(),
+            mapped_chunks = 0,
             "android sparse reader initialized"
         );
 
@@ -352,6 +185,8 @@ where
             block_size: sparse_block_size,
             total_blocks,
             expanded_size_bytes,
+            total_chunks,
+            chunk_header_size,
             declared_chunks: sparse_header.total_chunks,
             image_checksum: sparse_header.image_checksum,
             chunks,
@@ -375,15 +210,308 @@ where
         &self.config
     }
 
-    fn chunk_index_for_offset(&self, offset: u64) -> Option<usize> {
-        let index = self
-            .chunks
-            .partition_point(|chunk| chunk.output_end <= offset);
-        if index < self.chunks.len() {
-            Some(index)
-        } else {
-            None
+    async fn ensure_chunks_cover_range(
+        &self,
+        read_end: u64,
+        ctx: ReadContext,
+    ) -> GibbloxResult<()> {
+        if read_end > self.expanded_size_bytes {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "requested range exceeds sparse image",
+            ));
         }
+
+        loop {
+            let state = self.chunks.lock().await;
+            if state.output_cursor >= read_end {
+                return Ok(());
+            }
+            if state.next_chunk_index >= self.total_chunks {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!(
+                        "sparse output size mismatch (mapped {}, expected {})",
+                        state.output_cursor, self.expanded_size_bytes
+                    ),
+                ));
+            }
+            drop(state);
+
+            self.parse_next_chunk(ctx).await?;
+        }
+    }
+
+    async fn parse_next_chunk(&self, ctx: ReadContext) -> GibbloxResult<()> {
+        let mut state = self.chunks.lock().await;
+        let chunk_index = state.next_chunk_index;
+        if chunk_index >= self.total_chunks {
+            return Ok(());
+        }
+
+        let chunk_cursor = state.next_chunk_cursor;
+        let mut chunk_header_raw = [0u8; CHUNK_HEADER_LEN];
+        read_source_exact(
+            &self.source,
+            self.source_block_size,
+            self.source_size_bytes,
+            chunk_cursor,
+            &mut chunk_header_raw,
+            ctx,
+        )
+        .await?;
+        let chunk_header = SparseChunkHeader::parse(&chunk_header_raw);
+
+        let chunk_total_size = u64::from(chunk_header.total_sz);
+        if chunk_total_size < self.chunk_header_size {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!("chunk {chunk_index} total size is smaller than chunk header size"),
+            ));
+        }
+
+        let chunk_end = chunk_cursor.checked_add(chunk_total_size).ok_or_else(|| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                format!("chunk {chunk_index} range overflow"),
+            )
+        })?;
+        if chunk_end > self.source_size_bytes {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                format!("chunk {chunk_index} exceeds source size"),
+            ));
+        }
+
+        let chunk_payload_offset = chunk_cursor
+            .checked_add(self.chunk_header_size)
+            .ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    format!("chunk {chunk_index} payload offset overflow"),
+                )
+            })?;
+        let chunk_payload_size = chunk_total_size - self.chunk_header_size;
+        let chunk_output_bytes = u64::from(chunk_header.chunk_sz)
+            .checked_mul(self.block_size as u64)
+            .ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    format!("chunk {chunk_index} output size overflow"),
+                )
+            })?;
+
+        let mapped_chunk = match chunk_header.chunk_type {
+            CHUNK_TYPE_RAW => {
+                if chunk_payload_size != chunk_output_bytes {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::InvalidInput,
+                        format!(
+                            "chunk {chunk_index} raw payload size mismatch (expected {chunk_output_bytes}, got {chunk_payload_size})"
+                        ),
+                    ));
+                }
+                claim_output_span(
+                    &mut state.output_cursor,
+                    chunk_output_bytes,
+                    self.expanded_size_bytes,
+                    chunk_index,
+                )?
+                .map(|(output_start, output_end)| SparseChunk {
+                    output_start,
+                    output_end,
+                    kind: SparseChunkKind::Raw {
+                        source_offset: chunk_payload_offset,
+                    },
+                })
+            }
+            CHUNK_TYPE_FILL => {
+                if chunk_payload_size != 4 {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::InvalidInput,
+                        format!(
+                            "chunk {chunk_index} fill payload size mismatch (expected 4, got {chunk_payload_size})"
+                        ),
+                    ));
+                }
+
+                let mut pattern = [0u8; 4];
+                read_source_exact(
+                    &self.source,
+                    self.source_block_size,
+                    self.source_size_bytes,
+                    chunk_payload_offset,
+                    &mut pattern,
+                    ctx,
+                )
+                .await?;
+
+                claim_output_span(
+                    &mut state.output_cursor,
+                    chunk_output_bytes,
+                    self.expanded_size_bytes,
+                    chunk_index,
+                )?
+                .map(|(output_start, output_end)| SparseChunk {
+                    output_start,
+                    output_end,
+                    kind: SparseChunkKind::Fill { pattern },
+                })
+            }
+            CHUNK_TYPE_DONT_CARE => {
+                if chunk_payload_size != 0 {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::InvalidInput,
+                        format!(
+                            "chunk {chunk_index} DONT_CARE payload must be empty (got {chunk_payload_size})"
+                        ),
+                    ));
+                }
+
+                claim_output_span(
+                    &mut state.output_cursor,
+                    chunk_output_bytes,
+                    self.expanded_size_bytes,
+                    chunk_index,
+                )?
+                .map(|(output_start, output_end)| SparseChunk {
+                    output_start,
+                    output_end,
+                    kind: SparseChunkKind::DontCare,
+                })
+            }
+            CHUNK_TYPE_CRC32 => {
+                if chunk_header.chunk_sz != 0 {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::InvalidInput,
+                        format!("chunk {chunk_index} CRC32 chunk_sz must be zero"),
+                    ));
+                }
+                if chunk_payload_size != 4 {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::InvalidInput,
+                        format!(
+                            "chunk {chunk_index} CRC32 payload size mismatch (expected 4, got {chunk_payload_size})"
+                        ),
+                    ));
+                }
+
+                let mut crc = [0u8; 4];
+                read_source_exact(
+                    &self.source,
+                    self.source_block_size,
+                    self.source_size_bytes,
+                    chunk_payload_offset,
+                    &mut crc,
+                    ctx,
+                )
+                .await?;
+                None
+            }
+            other => {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Unsupported,
+                    format!("unsupported sparse chunk type 0x{other:04X} at chunk {chunk_index}"),
+                ));
+            }
+        };
+
+        if let Some(chunk) = mapped_chunk {
+            state.chunks.push(chunk);
+        }
+        state.next_chunk_index = state.next_chunk_index.checked_add(1).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "chunk index overflow")
+        })?;
+        state.next_chunk_cursor = chunk_end;
+
+        if state.next_chunk_index == self.total_chunks
+            && state.output_cursor != self.expanded_size_bytes
+        {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!(
+                    "sparse output size mismatch (mapped {}, expected {})",
+                    state.output_cursor, self.expanded_size_bytes
+                ),
+            ));
+        }
+
+        trace!(
+            chunk_index,
+            parsed_chunks = state.next_chunk_index,
+            mapped_chunks = state.chunks.len(),
+            mapped_output_bytes = state.output_cursor,
+            "parsed android sparse chunk"
+        );
+
+        Ok(())
+    }
+
+    async fn collect_read_plan(
+        &self,
+        start_offset: u64,
+        read_end: u64,
+    ) -> GibbloxResult<Vec<PlannedReadSegment>> {
+        let state = self.chunks.lock().await;
+        let mut cursor = start_offset;
+        let mut chunk_index = chunk_index_for_offset(&state.chunks, cursor).ok_or_else(|| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::Io,
+                "sparse mapping does not cover requested offset",
+            )
+        })?;
+
+        let mut plan = Vec::new();
+        while cursor < read_end {
+            let chunk = state.chunks.get(chunk_index).copied().ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    "sparse mapping ended before requested range",
+                )
+            })?;
+            if cursor < chunk.output_start || cursor >= chunk.output_end {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    "sparse mapping gap detected",
+                ));
+            }
+
+            let segment_end = read_end.min(chunk.output_end);
+            if segment_end <= cursor {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    "sparse mapping did not advance",
+                ));
+            }
+
+            plan.push(PlannedReadSegment {
+                chunk,
+                start: cursor,
+                end: segment_end,
+            });
+
+            cursor = segment_end;
+            if cursor == chunk.output_end {
+                chunk_index += 1;
+            }
+        }
+
+        Ok(plan)
+    }
+}
+
+struct PlannedReadSegment {
+    chunk: SparseChunk,
+    start: u64,
+    end: u64,
+}
+
+fn chunk_index_for_offset(chunks: &[SparseChunk], offset: u64) -> Option<usize> {
+    let index = chunks.partition_point(|chunk| chunk.output_end <= offset);
+    if index < chunks.len() {
+        Some(index)
+    } else {
+        None
     }
 }
 
@@ -438,43 +566,18 @@ where
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read end overflow")
         })?;
 
-        let mut cursor = start_offset;
-        let mut chunk_index = self.chunk_index_for_offset(cursor).ok_or_else(|| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::Io,
-                "sparse mapping does not cover requested offset",
-            )
-        })?;
+        self.ensure_chunks_cover_range(read_end, ctx).await?;
+        let plan = self.collect_read_plan(start_offset, read_end).await?;
 
-        while cursor < read_end {
-            let chunk = self.chunks.get(chunk_index).ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "sparse mapping ended before requested range",
-                )
-            })?;
-            if cursor < chunk.output_start || cursor >= chunk.output_end {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "sparse mapping gap detected",
-                ));
-            }
-
-            let segment_end = read_end.min(chunk.output_end);
-            if segment_end <= cursor {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "sparse mapping did not advance",
-                ));
-            }
-
-            let dst_start = usize::try_from(cursor - start_offset).map_err(|_| {
+        for segment in plan {
+            let chunk = segment.chunk;
+            let dst_start = usize::try_from(segment.start - start_offset).map_err(|_| {
                 GibbloxError::with_message(
                     GibbloxErrorKind::OutOfRange,
                     "destination slice offset overflow",
                 )
             })?;
-            let dst_len = usize::try_from(segment_end - cursor).map_err(|_| {
+            let dst_len = usize::try_from(segment.end - segment.start).map_err(|_| {
                 GibbloxError::with_message(
                     GibbloxErrorKind::OutOfRange,
                     "destination slice length overflow",
@@ -493,7 +596,7 @@ where
                 )
             })?;
 
-            let chunk_offset = cursor - chunk.output_start;
+            let chunk_offset = segment.start - chunk.output_start;
             match chunk.kind {
                 SparseChunkKind::Raw { source_offset } => {
                     let source_offset =
@@ -519,11 +622,6 @@ where
                 SparseChunkKind::DontCare => {
                     dst.fill(0);
                 }
-            }
-
-            cursor = segment_end;
-            if cursor == chunk.output_end {
-                chunk_index += 1;
             }
         }
 
@@ -771,10 +869,21 @@ fn fill_pattern(out: &mut [u8], pattern: [u8; 4], start_offset: u64) {
 mod tests {
     use super::*;
     use futures::executor::block_on;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
 
     struct FakeReader {
         block_size: u32,
         data: Vec<u8>,
+        reads: AtomicU64,
+    }
+
+    impl FakeReader {
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::Relaxed)
+        }
     }
 
     #[async_trait]
@@ -807,6 +916,8 @@ mod tests {
                 ));
             }
 
+            self.reads.fetch_add(1, Ordering::Relaxed);
+
             let offset = (lba as usize)
                 .checked_mul(self.block_size as usize)
                 .ok_or_else(|| {
@@ -836,11 +947,13 @@ mod tests {
         append_dont_care_chunk(&mut image, 1, 12);
         append_crc32_chunk(&mut image, 0xDEAD_BEEF, 12, 0);
 
-        let source = FakeReader {
+        let source = Arc::new(FakeReader {
             block_size: 16,
             data: image,
-        };
-        let reader = block_on(AndroidSparseBlockReader::new(source)).expect("open sparse reader");
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
 
         assert_eq!(reader.block_size(), 8);
         assert_eq!(block_on(reader.total_blocks()).expect("total blocks"), 3);
@@ -863,11 +976,13 @@ mod tests {
         let mut image = sparse_header(4, 1, 1, 32, 16);
         append_raw_chunk(&mut image, 1, &[1, 2, 3, 4], 16);
 
-        let source = FakeReader {
+        let source = Arc::new(FakeReader {
             block_size: 8,
             data: image,
-        };
-        let reader = block_on(AndroidSparseBlockReader::new(source)).expect("open sparse reader");
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
 
         let mut out = vec![0u8; 4];
         let read =
@@ -877,35 +992,95 @@ mod tests {
     }
 
     #[test]
-    fn rejects_raw_payload_size_mismatch_during_construction() {
-        let mut image = sparse_header(4, 1, 1, 28, 12);
+    fn opens_without_scanning_all_chunks() {
+        let mut image = sparse_header(8, 101, 101, 28, 12);
+        append_raw_chunk(&mut image, 1, b"ABCDEFGH", 12);
+        for _ in 0..100 {
+            append_dont_care_chunk(&mut image, 1, 12);
+        }
+
+        let source = Arc::new(FakeReader {
+            block_size: 16,
+            data: image,
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
+        assert_eq!(source.reads(), 1, "open should only read sparse header");
+
+        let mut out = [0u8; 8];
+        let read = block_on(reader.read_blocks(0, &mut out, ReadContext::FOREGROUND))
+            .expect("read first sparse block");
+        assert_eq!(read, out.len());
+        assert_eq!(out, *b"ABCDEFGH");
+        assert!(
+            source.reads() < 10,
+            "expected a few reads for first chunk only, got {}",
+            source.reads()
+        );
+    }
+
+    #[test]
+    fn defers_chunk_validation_until_requested_range() {
+        let mut image = sparse_header(4, 2, 2, 28, 12);
+        append_raw_chunk(&mut image, 1, b"ABCD", 12);
         append_chunk_header(&mut image, CHUNK_TYPE_RAW, 1, 15, 12);
         image.extend_from_slice(&[1, 2, 3]);
 
-        let source = FakeReader {
+        let source = Arc::new(FakeReader {
             block_size: 8,
             data: image,
-        };
-        let err = match block_on(AndroidSparseBlockReader::new(source)) {
-            Ok(_) => panic!("construction should fail"),
-            Err(err) => err,
-        };
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
+
+        let mut first = [0u8; 4];
+        let read = block_on(reader.read_blocks(0, &mut first, ReadContext::FOREGROUND))
+            .expect("read first block should succeed");
+        assert_eq!(read, first.len());
+        assert_eq!(first, *b"ABCD");
+
+        let mut second = [0u8; 4];
+        let err = block_on(reader.read_blocks(1, &mut second, ReadContext::FOREGROUND))
+            .expect_err("second block should hit invalid chunk");
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
     #[test]
-    fn rejects_crc_chunk_with_non_zero_chunk_size() {
-        let mut image = sparse_header(4, 0, 1, 28, 12);
-        append_crc32_chunk(&mut image, 0xAABB_CCDD, 12, 1);
+    fn rejects_raw_payload_size_mismatch_when_chunk_is_parsed() {
+        let mut image = sparse_header(4, 1, 1, 28, 12);
+        append_chunk_header(&mut image, CHUNK_TYPE_RAW, 1, 15, 12);
+        image.extend_from_slice(&[1, 2, 3]);
 
-        let source = FakeReader {
+        let source = Arc::new(FakeReader {
             block_size: 8,
             data: image,
-        };
-        let err = match block_on(AndroidSparseBlockReader::new(source)) {
-            Ok(_) => panic!("construction should fail"),
-            Err(err) => err,
-        };
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
+        let mut out = vec![0u8; 4];
+        let err = block_on(reader.read_blocks(0, &mut out, ReadContext::FOREGROUND))
+            .expect_err("first read should fail");
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn rejects_crc_chunk_with_non_zero_chunk_size_when_chunk_is_parsed() {
+        let mut image = sparse_header(4, 1, 1, 28, 12);
+        append_crc32_chunk(&mut image, 0xAABB_CCDD, 12, 1);
+
+        let source = Arc::new(FakeReader {
+            block_size: 8,
+            data: image,
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
+        let mut out = vec![0u8; 4];
+        let err = block_on(reader.read_blocks(0, &mut out, ReadContext::FOREGROUND))
+            .expect_err("first read should fail");
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
@@ -913,11 +1088,12 @@ mod tests {
     fn rejects_chunk_count_that_cannot_fit_chunk_headers() {
         let image = sparse_header(4, 0, 2, 28, 12);
 
-        let source = FakeReader {
+        let source = Arc::new(FakeReader {
             block_size: 8,
             data: image,
-        };
-        let err = match block_on(AndroidSparseBlockReader::new(source)) {
+            reads: AtomicU64::new(0),
+        });
+        let err = match block_on(AndroidSparseBlockReader::new(Arc::clone(&source))) {
             Ok(_) => panic!("construction should fail"),
             Err(err) => err,
         };
@@ -930,11 +1106,13 @@ mod tests {
         append_raw_chunk(&mut image, 1, b"ABCDEFGH", 12);
         append_dont_care_chunk(&mut image, 1, 12);
 
-        let source = FakeReader {
+        let source = Arc::new(FakeReader {
             block_size: 16,
             data: image,
-        };
-        let reader = block_on(AndroidSparseBlockReader::new(source)).expect("open sparse reader");
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
 
         let mut out = vec![0u8; 8];
         let err = block_on(reader.read_blocks(2, &mut out, ReadContext::FOREGROUND))

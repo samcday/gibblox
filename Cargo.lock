@@ -627,6 +627,7 @@ dependencies = [
 name = "gibblox-android-sparse"
 version = "0.0.1-rc.10"
 dependencies = [
+ "async-lock",
  "async-trait",
  "futures",
  "gibblox-core",
