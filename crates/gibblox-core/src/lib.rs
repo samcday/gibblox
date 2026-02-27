@@ -9,21 +9,21 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use async_trait::async_trait;
 use core::{fmt, hash::Hasher};
 
-mod aligned_block;
 mod block_byte;
 mod byte_range;
 mod gpt;
 mod lru;
 mod offset_byte;
 mod paged;
+mod window_block;
 
-pub use aligned_block::AlignedBlockReader;
 pub use block_byte::BlockByteReader;
 pub use byte_range::AlignedByteReader;
 pub use gpt::{GptBlockReader, GptPartitionSelector};
 pub use lru::{LruBlockReader, LruConfig};
 pub use offset_byte::OffsetByteReader;
 pub use paged::{PagedBlockConfig, PagedBlockReader};
+pub use window_block::WindowBlockReader;
 
 pub type GibbloxResult<T> = core::result::Result<T, GibbloxError>;
 
@@ -252,11 +252,38 @@ pub trait ByteReader: Send + Sync {
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result;
 
     /// Read bytes starting at `offset` into `buf`.
+    ///
+    /// Returns the number of bytes copied into `buf`.
+    ///
+    /// Callers may request past end-of-source; in that case implementations
+    /// return `Ok(0)` (or a shorter length when partially in range).
+    ///
+    /// For in-range requests, implementations should not silently tolerate
+    /// unexpected short reads from the backing transport. Either complete the
+    /// requested in-range copy or return an error.
     async fn read_at(&self, offset: u64, buf: &mut [u8], ctx: ReadContext) -> GibbloxResult<usize>;
 }
 
 #[async_trait]
 impl<T> ByteReader for Arc<T>
+where
+    T: ByteReader + ?Sized,
+{
+    async fn size_bytes(&self) -> GibbloxResult<u64> {
+        (**self).size_bytes().await
+    }
+
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        (**self).write_identity(out)
+    }
+
+    async fn read_at(&self, offset: u64, buf: &mut [u8], ctx: ReadContext) -> GibbloxResult<usize> {
+        (**self).read_at(offset, buf, ctx).await
+    }
+}
+
+#[async_trait]
+impl<T> ByteReader for &T
 where
     T: ByteReader + ?Sized,
 {
@@ -285,6 +312,11 @@ pub trait BlockReader: Send + Sync {
     fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result;
 
     /// Read one or more blocks starting at `lba` into `buf`.
+    ///
+    /// Implementations should treat in-range short reads as I/O failures and
+    /// return an error rather than silently truncating, unless the reader
+    /// intentionally exposes synthesized tail bytes (for example, a byte source
+    /// viewed as fixed-size blocks).
     async fn read_blocks(&self, lba: u64, buf: &mut [u8], ctx: ReadContext)
     -> GibbloxResult<usize>;
 }

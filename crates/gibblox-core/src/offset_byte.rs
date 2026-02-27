@@ -71,8 +71,8 @@ mod tests {
     use futures::executor::block_on;
 
     use crate::{
-        AlignedBlockReader, BlockByteReader, BlockReader, ByteReader, GibbloxResult,
-        OffsetByteReader, ReadContext,
+        BlockByteReader, BlockReader, ByteReader, GibbloxResult, OffsetByteReader, ReadContext,
+        WindowBlockReader,
     };
 
     struct RecordingByteReader {
@@ -171,7 +171,13 @@ mod tests {
         );
 
         let blocked = BlockByteReader::new(offset_reader, 512).expect("create block view");
-        let aligned = block_on(AlignedBlockReader::new(blocked, 4096)).expect("create");
+        let aligned = block_on(WindowBlockReader::new(
+            blocked,
+            0,
+            (16 * 1024 - 777) as u64,
+            4096,
+        ))
+        .expect("create");
 
         let mut out = vec![0u8; 4096];
         block_on(aligned.read_blocks(0, &mut out, ReadContext::FOREGROUND)).expect("read");
