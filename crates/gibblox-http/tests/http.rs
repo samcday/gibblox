@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use gibblox_core::{BlockByteReader, BlockReader, GibbloxErrorKind, ReadContext};
-use gibblox_http::HttpBlockReader;
+use gibblox_http::HttpReader;
 
 #[derive(Clone, Copy)]
 enum RangeBehavior {
@@ -158,7 +158,7 @@ fn data_blob(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
 }
 
-fn block_reader(source: HttpBlockReader) -> BlockByteReader<HttpBlockReader> {
+fn block_reader(source: HttpReader) -> BlockByteReader<HttpReader> {
     BlockByteReader::new(source, 512).expect("wrap http byte reader")
 }
 
@@ -166,7 +166,7 @@ fn block_reader(source: HttpBlockReader) -> BlockByteReader<HttpBlockReader> {
 async fn http_read_blocks_roundtrip() {
     let data = data_blob(8192);
     let (url, shutdown) = start_server(data.clone()).await;
-    let source = HttpBlockReader::new(url, 512).await.expect("http source");
+    let source = HttpReader::new(url, 512).await.expect("http source");
     assert_eq!(source.size_bytes(), data.len() as u64);
     let source = block_reader(source);
 
@@ -185,7 +185,7 @@ async fn http_read_blocks_roundtrip() {
 async fn http_probe_size_uses_range() {
     let data = data_blob(4096);
     let (url, shutdown) = start_server(data.clone()).await;
-    let source = HttpBlockReader::new(url, 512).await.expect("http source");
+    let source = HttpReader::new(url, 512).await.expect("http source");
     assert_eq!(source.size_bytes(), 4096);
     let _ = shutdown.send(());
 }
@@ -194,7 +194,7 @@ async fn http_probe_size_uses_range() {
 async fn http_reader_zero_pads_tail_block_for_unaligned_size() {
     let data = data_blob(4097);
     let (url, shutdown) = start_server(data.clone()).await;
-    let source = HttpBlockReader::new(url, 512).await.expect("http source");
+    let source = HttpReader::new(url, 512).await.expect("http source");
 
     assert_eq!(source.size_bytes(), 4097);
     let source = block_reader(source);
@@ -216,7 +216,7 @@ async fn http_reader_zero_pads_tail_block_for_unaligned_size() {
 async fn http_reader_reports_out_of_range_after_last_block() {
     let data = data_blob(4097);
     let (url, shutdown) = start_server(data).await;
-    let source = HttpBlockReader::new(url, 512).await.expect("http source");
+    let source = HttpReader::new(url, 512).await.expect("http source");
     let source = block_reader(source);
 
     let mut buf = vec![0u8; 512];
@@ -233,7 +233,7 @@ async fn http_reader_reports_out_of_range_after_last_block() {
 async fn http_reader_rejects_200_for_range_reads() {
     let data = data_blob(4096);
     let (url, shutdown) = start_server_with_behavior(data.clone(), RangeBehavior::Ignore).await;
-    let source = HttpBlockReader::new_with_size(url, 512, data.len() as u64)
+    let source = HttpReader::new_with_size(url, 512, data.len() as u64)
         .await
         .expect("http source");
     let source = block_reader(source);
@@ -254,7 +254,7 @@ async fn http_reader_retries_transient_non_partial_response() {
     let data = data_blob(4096);
     let (url, shutdown) =
         start_server_with_behavior(data.clone(), RangeBehavior::IgnoreFirstThenHonor).await;
-    let source = HttpBlockReader::new_with_size(url, 512, data.len() as u64)
+    let source = HttpReader::new_with_size(url, 512, data.len() as u64)
         .await
         .expect("http source");
     let source = block_reader(source);
@@ -275,7 +275,7 @@ async fn http_reader_rejects_mismatched_content_range_header() {
     let data = data_blob(4096);
     let (url, shutdown) =
         start_server_with_behavior(data.clone(), RangeBehavior::WrongContentRange).await;
-    let source = HttpBlockReader::new_with_size(url, 512, data.len() as u64)
+    let source = HttpReader::new_with_size(url, 512, data.len() as u64)
         .await
         .expect("http source");
     let source = block_reader(source);

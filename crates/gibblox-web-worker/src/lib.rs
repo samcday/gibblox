@@ -16,7 +16,7 @@ mod wasm {
         BlockByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult,
         GptBlockReader, GptPartitionSelector,
     };
-    use gibblox_http::{HttpBlockReader, HttpBlockReaderConfig};
+    use gibblox_http::{HttpReader, HttpReaderConfig};
     use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
     use gibblox_pipeline::{
         PipelineSource, PipelineSourceCasyncSource, decode_pipeline, pipeline_identity_id,
@@ -554,11 +554,9 @@ mod wasm {
         source: &gibblox_pipeline::PipelineSourceHttpSource,
     ) -> GibbloxResult<Arc<dyn BlockReader>> {
         let url = parse_url(source.http.as_str(), "pipeline http source")?;
-        let config = HttpBlockReaderConfig::new(url, PIPELINE_BLOCK_SIZE);
-        let reader = BlockByteReader::new(
-            HttpBlockReader::open(config.clone()).await?,
-            PIPELINE_BLOCK_SIZE,
-        )?;
+        let config = HttpReaderConfig::new(url, PIPELINE_BLOCK_SIZE);
+        let reader =
+            BlockByteReader::new(HttpReader::open(config.clone()).await?, PIPELINE_BLOCK_SIZE)?;
 
         let cache = match OpfsCacheOps::open_for_config(&config).await {
             Ok(cache) => cache,
@@ -573,7 +571,7 @@ mod wasm {
             Err(err) => {
                 warn!(error = %err, "failed to initialize cached HTTP reader, using uncached reader");
                 Ok(Arc::new(BlockByteReader::new(
-                    HttpBlockReader::open(config).await?,
+                    HttpReader::open(config).await?,
                     PIPELINE_BLOCK_SIZE,
                 )?))
             }
