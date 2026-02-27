@@ -109,7 +109,7 @@ impl ByteReader for AlignedByteReader {
         let block_size_u64 = self.block_size as u64;
         let block_size = self.block_size as usize;
 
-        if offset % block_size_u64 == 0 && read_len % block_size == 0 {
+        if offset.is_multiple_of(block_size_u64) && read_len.is_multiple_of(block_size) {
             let read = self
                 .inner
                 .read_blocks(offset / block_size_u64, &mut out[..read_len], ctx)
