@@ -17,6 +17,9 @@ use crate::bin::{
 
 pub mod bin;
 
+#[cfg(any(feature = "std", all(feature = "web", target_arch = "wasm32")))]
+mod materialize_common;
+
 #[cfg(feature = "std")]
 mod materialize_std;
 

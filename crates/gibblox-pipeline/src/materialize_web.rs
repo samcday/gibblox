@@ -17,10 +17,8 @@ use gibblox_xz::{XzBlockReader, XzBlockReaderConfig};
 use tracing::warn;
 use url::Url;
 
-use crate::{
-    PipelineSource, PipelineSourceCasyncSource, PipelineSourceGptSource, PipelineSourceMbrSource,
-    pipeline_identity_string,
-};
+use crate::materialize_common::derive_casync_chunk_store_url;
+use crate::{PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string};
 
 #[derive(Clone, Debug)]
 pub struct OpenPipelineOptions {
@@ -136,7 +134,12 @@ async fn resolve_casync_source(
     let index_url = parse_url(source.casync.index.as_str(), "pipeline casync.index")?;
     let chunk_store_url = match source.casync.chunk_store.as_deref() {
         Some(chunk_store) => parse_url(chunk_store, "pipeline casync.chunk_store")?,
-        None => derive_casync_chunk_store_url(&index_url)?,
+        None => derive_casync_chunk_store_url(&index_url).map_err(|err| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!("derive casync chunk store URL from {index_url}: {err}"),
+            )
+        })?,
     };
 
     let chunk_store_config = WebCasyncChunkStoreConfig::new(chunk_store_url)?;
@@ -152,7 +155,7 @@ async fn resolve_casync_source(
     Ok(Arc::new(reader))
 }
 
-fn mbr_selector(source: &PipelineSourceMbrSource) -> GibbloxResult<MbrPartitionSelector> {
+fn mbr_selector(source: &crate::PipelineSourceMbrSource) -> GibbloxResult<MbrPartitionSelector> {
     if let Some(partuuid) = source.mbr.partuuid.as_deref() {
         return Ok(MbrPartitionSelector::part_uuid(partuuid.to_string()));
     }
@@ -166,7 +169,7 @@ fn mbr_selector(source: &PipelineSourceMbrSource) -> GibbloxResult<MbrPartitionS
     ))
 }
 
-fn gpt_selector(source: &PipelineSourceGptSource) -> GibbloxResult<GptPartitionSelector> {
+fn gpt_selector(source: &crate::PipelineSourceGptSource) -> GibbloxResult<GptPartitionSelector> {
     if let Some(partlabel) = source.gpt.partlabel.as_deref() {
         return Ok(GptPartitionSelector::part_label(partlabel.to_string()));
     }
@@ -198,33 +201,5 @@ fn parse_url(value: &str, context: &str) -> GibbloxResult<Url> {
 
     Url::parse(value).map_err(|err| {
         GibbloxError::with_message(GibbloxErrorKind::InvalidInput, format!("{context}: {err}"))
-    })
-}
-
-fn derive_casync_chunk_store_url(index_url: &Url) -> GibbloxResult<Url> {
-    if let Some(segments) = index_url.path_segments() {
-        let segments: Vec<&str> = segments.collect();
-        if let Some(index_pos) = segments.iter().rposition(|segment| *segment == "indexes") {
-            let mut base_segments = segments[..=index_pos].to_vec();
-            base_segments[index_pos] = "chunks";
-
-            let mut url = index_url.clone();
-            let mut path = String::from("/");
-            path.push_str(base_segments.join("/").as_str());
-            if !path.ends_with('/') {
-                path.push('/');
-            }
-            url.set_path(path.as_str());
-            url.set_query(None);
-            url.set_fragment(None);
-            return Ok(url);
-        }
-    }
-
-    index_url.join("./").map_err(|err| {
-        GibbloxError::with_message(
-            GibbloxErrorKind::InvalidInput,
-            format!("derive casync chunk store URL from {index_url}: {err}"),
-        )
     })
 }

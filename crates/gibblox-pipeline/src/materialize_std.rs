@@ -18,6 +18,7 @@ use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_xz::XzBlockReader;
 use url::Url;
 
+use crate::materialize_common::derive_casync_chunk_store_url;
 use crate::{PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string};
 
 pub type DynBlockReader = Arc<dyn BlockReader>;
@@ -194,7 +195,8 @@ fn resolve_casync_chunk_store_locator(
 
     match index_locator {
         StdCasyncIndexLocator::Url(url) => {
-            let chunk_url = derive_casync_chunk_store_url(url)?;
+            let chunk_url = derive_casync_chunk_store_url(url)
+                .with_context(|| format!("derive casync chunk store URL from {url}"))?;
             StdCasyncChunkStoreLocator::url_prefix(chunk_url)
                 .map_err(|err| anyhow!("configure casync chunk store URL: {err}"))
         }
@@ -225,30 +227,6 @@ fn parse_casync_chunk_store_locator(value: &str) -> Result<StdCasyncChunkStoreLo
 fn url_to_local_path(url: &Url) -> Result<PathBuf> {
     url.to_file_path()
         .map_err(|_| anyhow!("URL is not a valid local file path: {url}"))
-}
-
-fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
-    if let Some(segments) = index_url.path_segments() {
-        let segments: Vec<&str> = segments.collect();
-        if let Some(index_pos) = segments.iter().rposition(|segment| *segment == "indexes") {
-            let mut base_segments = segments[..=index_pos].to_vec();
-            base_segments[index_pos] = "chunks";
-            let mut url = index_url.clone();
-            let mut path = String::from("/");
-            path.push_str(&base_segments.join("/"));
-            if !path.ends_with('/') {
-                path.push('/');
-            }
-            url.set_path(&path);
-            url.set_query(None);
-            url.set_fragment(None);
-            return Ok(url);
-        }
-    }
-
-    index_url
-        .join("./")
-        .with_context(|| format!("derive casync chunk store URL from {index_url}"))
 }
 
 fn derive_casync_chunk_store_path(index_path: &Path) -> PathBuf {
