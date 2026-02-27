@@ -29,6 +29,7 @@ use gibblox_xz::XzBlockReader;
 use url::Url;
 
 const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
+const DEFAULT_SOURCE_BLOCK_SIZE: u32 = 4096;
 const STREAM_BLOCK_WINDOW: usize = 256;
 
 type DynBlockReader = Arc<dyn BlockReader>;
@@ -53,7 +54,7 @@ struct Cli {
     /// Number of blocks to copy from resolved pipeline output.
     #[arg(long, value_name = "COUNT", requires = "pipeline")]
     count: Option<u64>,
-    /// Logical block size for pipeline execution.
+    /// Logical block size exposed by CLI output reads.
     #[arg(long, value_name = "BLOCK_SIZE", requires = "pipeline")]
     blocksize: Option<u32>,
     #[command(subcommand)]
@@ -160,16 +161,16 @@ async fn run_default_pipeline_execute(
         std::io::stdout().is_terminal(),
     )?;
 
-    let block_size = requested_block_size.unwrap_or(DEFAULT_IMAGE_BLOCK_SIZE);
-    validate_image_block_size(block_size)?;
+    let output_block_size = requested_block_size.unwrap_or(DEFAULT_IMAGE_BLOCK_SIZE);
+    validate_image_block_size(output_block_size)?;
 
     let input = read_input_bytes(input_path)?;
     let source = parse_pipeline_document(&input, input_path)?;
     validate_pipeline(&source)
         .with_context(|| format!("validate pipeline input {}", io_label(input_path)))?;
 
-    let reader = open_pipeline_source(&source, block_size).await?;
-    let reader = slice_reader(reader, start_blocks, count_blocks).await?;
+    let reader = open_pipeline_source(&source).await?;
+    let reader = shape_output_reader(reader, start_blocks, count_blocks, output_block_size).await?;
     write_reader_output(reader.as_ref(), output_path).await
 }
 
@@ -271,29 +272,44 @@ fn resolve_block_span(
     Ok((start_blocks, blocks))
 }
 
-async fn slice_reader(
+async fn shape_output_reader(
     reader: DynBlockReader,
     start_blocks: u64,
     count_blocks: Option<u64>,
+    output_block_size: u32,
 ) -> Result<DynBlockReader> {
-    let total_blocks = reader
+    let source_block_size = reader.block_size() as u64;
+    let source_total_blocks = reader
         .total_blocks()
         .await
         .map_err(|err| anyhow!("read pipeline total blocks: {err}"))?;
-    let (start_blocks, span_blocks) = resolve_block_span(total_blocks, start_blocks, count_blocks)?;
-    if start_blocks == 0 && span_blocks == total_blocks {
+    let source_size_bytes = source_total_blocks
+        .checked_mul(source_block_size)
+        .ok_or_else(|| anyhow!("pipeline source byte size overflow"))?;
+
+    let output_block_size_u64 = output_block_size as u64;
+    let output_total_blocks = source_size_bytes.div_ceil(output_block_size_u64);
+    let (start_blocks, span_blocks) =
+        resolve_block_span(output_total_blocks, start_blocks, count_blocks)?;
+    if start_blocks == 0
+        && span_blocks == output_total_blocks
+        && output_block_size == reader.block_size()
+    {
         return Ok(reader);
     }
 
-    let block_size = reader.block_size();
     let offset_bytes = start_blocks
-        .checked_mul(block_size as u64)
+        .checked_mul(output_block_size_u64)
         .ok_or_else(|| anyhow!("pipeline start byte offset overflow"))?;
-    let size_bytes = span_blocks
-        .checked_mul(block_size as u64)
+    let requested_size_bytes = span_blocks
+        .checked_mul(output_block_size_u64)
         .ok_or_else(|| anyhow!("pipeline span byte length overflow"))?;
+    let remaining_bytes = source_size_bytes
+        .checked_sub(offset_bytes)
+        .ok_or_else(|| anyhow!("pipeline start byte offset exceeds source size"))?;
+    let size_bytes = requested_size_bytes.min(remaining_bytes);
 
-    let window = WindowBlockReader::new(reader, offset_bytes, size_bytes, block_size)
+    let window = WindowBlockReader::new(reader, offset_bytes, size_bytes, output_block_size)
         .await
         .map_err(|err| anyhow!("construct pipeline read window: {err}"))?;
     Ok(Arc::new(window) as DynBlockReader)
@@ -301,7 +317,6 @@ async fn slice_reader(
 
 fn open_pipeline_source<'a>(
     source: &'a PipelineSource,
-    block_size: u32,
 ) -> Pin<Box<dyn Future<Output = Result<DynBlockReader>> + 'a>> {
     Box::pin(async move {
         match source {
@@ -313,10 +328,10 @@ fn open_pipeline_source<'a>(
 
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
-                let reader = HttpReader::new(url.clone(), block_size)
+                let reader = HttpReader::new(url.clone(), DEFAULT_SOURCE_BLOCK_SIZE)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
-                let reader = BlockByteReader::new(reader, block_size)
+                let reader = BlockByteReader::new(reader, DEFAULT_SOURCE_BLOCK_SIZE)
                     .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
@@ -326,21 +341,20 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline file source is empty");
                 }
 
-                let reader = FileReader::open(value, block_size)
+                let reader = FileReader::open(value, DEFAULT_SOURCE_BLOCK_SIZE)
                     .map_err(|err| anyhow!("open file source {value}: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
-            PipelineSource::Casync(source) => open_casync_source(&source.casync, block_size).await,
+            PipelineSource::Casync(source) => open_casync_source(&source.casync).await,
             PipelineSource::Xz(source) => {
-                let upstream = open_pipeline_source(source.xz.as_ref(), block_size).await?;
+                let upstream = open_pipeline_source(source.xz.as_ref()).await?;
                 let reader = XzBlockReader::new(upstream)
                     .await
                     .map_err(|err| anyhow!("open xz reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::AndroidSparseImg(source) => {
-                let upstream =
-                    open_pipeline_source(source.android_sparseimg.as_ref(), block_size).await?;
+                let upstream = open_pipeline_source(source.android_sparseimg.as_ref()).await?;
                 let reader = AndroidSparseBlockReader::new(upstream)
                     .await
                     .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
@@ -355,7 +369,8 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline mbr source missing selector")
                 };
 
-                let upstream = open_pipeline_source(source.mbr.source.as_ref(), block_size).await?;
+                let upstream = open_pipeline_source(source.mbr.source.as_ref()).await?;
+                let block_size = upstream.block_size();
                 let reader = MbrBlockReader::new(upstream, selector, block_size)
                     .await
                     .map_err(|err| anyhow!("open mbr reader: {err}"))?;
@@ -372,7 +387,8 @@ fn open_pipeline_source<'a>(
                     bail!("pipeline gpt source missing selector")
                 };
 
-                let upstream = open_pipeline_source(source.gpt.source.as_ref(), block_size).await?;
+                let upstream = open_pipeline_source(source.gpt.source.as_ref()).await?;
+                let block_size = upstream.block_size();
                 let reader = GptBlockReader::new(upstream, selector, block_size)
                     .await
                     .map_err(|err| anyhow!("open gpt reader: {err}"))?;
@@ -384,7 +400,6 @@ fn open_pipeline_source<'a>(
 
 async fn open_casync_source(
     source: &gibblox_pipeline::PipelineSourceCasync,
-    block_size: u32,
 ) -> Result<DynBlockReader> {
     let index = source.index.trim();
     if index.is_empty() {
@@ -407,7 +422,7 @@ async fn open_casync_source(
         index_source,
         chunk_store,
         CasyncReaderConfig {
-            block_size,
+            block_size: DEFAULT_SOURCE_BLOCK_SIZE,
             strict_verify: false,
             identity: Some(pipeline_identity_string(&PipelineSource::Casync(
                 PipelineSourceCasyncSource {
