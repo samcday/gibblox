@@ -230,7 +230,7 @@ impl GptBlockReader {
         )
         .await?;
         let partition_table = &partition_table_raw[..table_len];
-        let partition_table_crc32 = crc32_ieee(&partition_table);
+        let partition_table_crc32 = crc32_ieee(partition_table);
         if partition_table_crc32 != header.partition_entry_array_crc32 {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -239,7 +239,7 @@ impl GptBlockReader {
         }
 
         let selected = select_partition_entry(
-            &partition_table,
+            partition_table,
             header.partition_entry_size as usize,
             &config.selector,
         )?;
