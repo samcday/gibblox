@@ -106,14 +106,33 @@ impl ByteReader for AlignedByteReader {
             return Ok(0);
         }
 
-        let bs = self.block_size as u64;
-        let aligned_start = (offset / bs) * bs;
+        let block_size_u64 = self.block_size as u64;
+        let block_size = self.block_size as usize;
+
+        if offset % block_size_u64 == 0 && read_len % block_size == 0 {
+            let read = self
+                .inner
+                .read_blocks(offset / block_size_u64, &mut out[..read_len], ctx)
+                .await?;
+            if read != read_len {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    "short aligned read from block source",
+                ));
+            }
+            return Ok(read_len);
+        }
+
+        let aligned_start = (offset / block_size_u64) * block_size_u64;
         let end = offset.checked_add(read_len as u64).ok_or_else(|| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range overflow")
         })?;
-        let aligned_end = end.div_ceil(bs).checked_mul(bs).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "aligned range overflow")
-        })?;
+        let aligned_end = end
+            .div_ceil(block_size_u64)
+            .checked_mul(block_size_u64)
+            .ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "aligned range overflow")
+            })?;
         let aligned_len = usize::try_from(aligned_end - aligned_start).map_err(|_| {
             GibbloxError::with_message(
                 GibbloxErrorKind::OutOfRange,
@@ -124,7 +143,7 @@ impl ByteReader for AlignedByteReader {
         let mut scratch = vec![0u8; aligned_len];
         let read = self
             .inner
-            .read_blocks(aligned_start / bs, &mut scratch, ctx)
+            .read_blocks(aligned_start / block_size_u64, &mut scratch, ctx)
             .await?;
         if read != scratch.len() {
             return Err(GibbloxError::with_message(
@@ -165,6 +184,12 @@ mod tests {
         block_size: u32,
         data: Vec<u8>,
         requests: Arc<Mutex<Vec<(u64, usize)>>>,
+    }
+
+    struct PointerRecordingReader {
+        block_size: u32,
+        data: Vec<u8>,
+        requests: Arc<Mutex<Vec<(u64, usize, usize)>>>,
     }
 
     #[async_trait]
@@ -211,6 +236,51 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl BlockReader for PointerRecordingReader {
+        fn block_size(&self) -> u32 {
+            self.block_size
+        }
+
+        async fn total_blocks(&self) -> GibbloxResult<u64> {
+            Ok(self.data.len().div_ceil(self.block_size as usize) as u64)
+        }
+
+        fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+            out.write_str("pointer-recording")
+        }
+
+        async fn read_blocks(
+            &self,
+            lba: u64,
+            buf: &mut [u8],
+            _ctx: ReadContext,
+        ) -> GibbloxResult<usize> {
+            self.requests.lock().expect("lock request log").push((
+                lba,
+                buf.len(),
+                buf.as_ptr() as usize,
+            ));
+
+            let offset = (lba as usize)
+                .checked_mul(self.block_size as usize)
+                .ok_or_else(|| {
+                    GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
+                })?;
+            let end = offset.checked_add(buf.len()).ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range overflow")
+            })?;
+            if end > self.data.len() {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "read exceeds backing store",
+                ));
+            }
+            buf.copy_from_slice(&self.data[offset..end]);
+            Ok(buf.len())
+        }
+    }
+
     #[test]
     fn aligned_byte_reader_coalesces_unaligned_reads() {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -228,6 +298,28 @@ mod tests {
 
         let calls = requests.lock().expect("lock request log");
         assert_eq!(calls.as_slice(), &[(0, 129 * 512)]);
+    }
+
+    #[test]
+    fn aligned_byte_reader_uses_caller_buffer_for_aligned_reads() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let data = patterned_data(1024 * 1024);
+        let source: Arc<dyn BlockReader> = Arc::new(PointerRecordingReader {
+            block_size: 512,
+            data: data.clone(),
+            requests: Arc::clone(&requests),
+        });
+        let reader = block_on(super::AlignedByteReader::new(source)).expect("create reader");
+
+        let mut out = vec![0u8; 64 * 1024];
+        let out_ptr = out.as_ptr() as usize;
+        block_on(reader.read_exact_at(512, &mut out, ReadContext::FOREGROUND))
+            .expect("read aligned range");
+
+        assert_eq!(&out[..], &data[512..512 + out.len()]);
+
+        let calls = requests.lock().expect("lock request log");
+        assert_eq!(calls.as_slice(), &[(1, out.len(), out_ptr)]);
     }
 
     #[test]
