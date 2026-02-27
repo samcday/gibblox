@@ -11,7 +11,10 @@ use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
-use gibblox_core::{BlockByteReader, BlockReader, GptBlockReader, GptPartitionSelector};
+use gibblox_core::{
+    AlignedByteReader, BlockByteReader, BlockReader, ByteReader, GptBlockReader,
+    GptPartitionSelector,
+};
 use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
@@ -22,6 +25,7 @@ use crate::materialize_common::derive_casync_chunk_store_url;
 use crate::{PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string};
 
 pub type DynBlockReader = Arc<dyn BlockReader>;
+type DynByteReader = Arc<dyn ByteReader>;
 
 #[derive(Clone, Debug)]
 pub struct OpenPipelineOptions {
@@ -78,8 +82,8 @@ fn open_pipeline_source<'a>(
             }
             PipelineSource::Casync(source) => open_casync_source(&source.casync, opts).await,
             PipelineSource::Xz(source) => {
-                let upstream = open_pipeline_source(source.xz.as_ref(), opts).await?;
-                let reader = XzBlockReader::new(upstream)
+                let upstream = open_pipeline_byte_source(source.xz.as_ref(), opts).await?;
+                let reader = XzBlockReader::new_from_byte_reader(upstream, opts.image_block_size)
                     .await
                     .map_err(|err| anyhow!("open xz reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
@@ -123,6 +127,53 @@ fn open_pipeline_source<'a>(
                     .await
                     .map_err(|err| anyhow!("open gpt reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
+            }
+        }
+    })
+}
+
+fn open_pipeline_byte_source<'a>(
+    source: &'a PipelineSource,
+    opts: &'a OpenPipelineOptions,
+) -> Pin<Box<dyn Future<Output = Result<DynByteReader>> + 'a>> {
+    Box::pin(async move {
+        match source {
+            PipelineSource::Http(source) => {
+                let value = source.http.trim();
+                if value.is_empty() {
+                    bail!("pipeline http source is empty");
+                }
+
+                let url =
+                    Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
+                let reader = HttpReader::new(url.clone(), opts.image_block_size)
+                    .await
+                    .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            PipelineSource::File(source) => {
+                let value = source.file.trim();
+                if value.is_empty() {
+                    bail!("pipeline file source is empty");
+                }
+
+                let reader = FileReader::open(value, opts.image_block_size)
+                    .map_err(|err| anyhow!("open file source {value}: {err}"))?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            PipelineSource::Xz(source) => {
+                let upstream = open_pipeline_byte_source(source.xz.as_ref(), opts).await?;
+                let reader = XzBlockReader::new_from_byte_reader(upstream, opts.image_block_size)
+                    .await
+                    .map_err(|err| anyhow!("open xz byte reader: {err}"))?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            _ => {
+                let upstream = open_pipeline_source(source, opts).await?;
+                let reader = AlignedByteReader::new(upstream)
+                    .await
+                    .map_err(|err| anyhow!("open aligned byte view: {err}"))?;
+                Ok(Arc::new(reader) as DynByteReader)
             }
         }
     })

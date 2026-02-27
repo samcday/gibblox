@@ -71,13 +71,14 @@ impl Client {
 
     pub async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
         // Prefer a ranged GET to coax Content-Range, fall back to HEAD/Content-Length.
+        tracing::trace!(%url, "http probe range");
         let start = Instant::now();
         let resp = self
             .send_request(url, Some("bytes=0-0"), "GET", ReadContext::FOREGROUND)
             .await
             .map_err(|err| HttpError::Msg(format!("probe request: {err}")))?;
         let status = resp.status();
-        tracing::debug!(%url, status = status, "http probe response");
+        tracing::trace!(%url, status = status, "http probe response");
         let headers = resp.headers();
         if let Ok(Some(val)) = headers.get(CONTENT_RANGE.as_str()) {
             if let Some(len) = parse_content_range_total(&val) {

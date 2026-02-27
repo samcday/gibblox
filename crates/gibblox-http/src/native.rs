@@ -31,7 +31,7 @@ impl Client {
     }
 
     pub async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
-        tracing::debug!(%url, "http probe range");
+        tracing::trace!(%url, "http probe range");
         let start = Instant::now();
         let resp = self
             .inner
@@ -41,7 +41,7 @@ impl Client {
             .await
             .map_err(|err| HttpError::Msg(format!("probe GET: {err}")))?;
         let status = resp.status();
-        tracing::debug!(status = %status, "http probe response");
+        tracing::trace!(status = %status, "http probe response");
         if let Some(len) = resp
             .headers()
             .get(CONTENT_RANGE)

@@ -14,8 +14,8 @@ use core::{
 };
 use crc32fast::Hasher;
 use gibblox_core::{
-    AlignedByteReader, BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind,
-    GibbloxResult, ReadContext,
+    AlignedByteReader, BlockReader, BlockReaderConfigIdentity, ByteReader, GibbloxError,
+    GibbloxErrorKind, GibbloxResult, ReadContext,
 };
 use tracing::{debug, trace};
 use xz4rust::{DICT_SIZE_MAX, DICT_SIZE_MIN, XzDecoder, XzNextBlockResult};
@@ -162,12 +162,13 @@ impl DecodedCacheState {
 pub struct XzBlockReader {
     block_size: u32,
     total_blocks: u64,
+    source_size_bytes: u64,
     uncompressed_size_bytes: u64,
     compressed_size_bytes: u64,
     stream_header: [u8; XZ_HEADER_LEN],
     stream_flags: [u8; 2],
     blocks: Vec<XzIndexedBlock>,
-    byte_reader: AlignedByteReader,
+    source: Arc<dyn ByteReader>,
     config: XzReaderConfig,
     identity_config: XzBlockReaderConfig,
     decoded_cache: Mutex<DecodedCacheState>,
@@ -197,6 +198,39 @@ impl XzBlockReader {
         source: Arc<dyn BlockReader>,
         config: XzBlockReaderConfig,
     ) -> GibbloxResult<Self> {
+        let block_size = source.block_size();
+        let byte_source: Arc<dyn ByteReader> = Arc::new(AlignedByteReader::new(source).await?);
+        Self::open_with_byte_reader_config(byte_source, block_size, config).await
+    }
+
+    pub async fn new_from_byte_reader(
+        source: Arc<dyn ByteReader>,
+        block_size: u32,
+    ) -> GibbloxResult<Self> {
+        Self::open_with_byte_reader_config(source, block_size, XzBlockReaderConfig::default()).await
+    }
+
+    pub async fn new_from_byte_reader_with_config(
+        source: Arc<dyn ByteReader>,
+        block_size: u32,
+        config: XzReaderConfig,
+    ) -> GibbloxResult<Self> {
+        Self::open_with_byte_reader_config(
+            source,
+            block_size,
+            XzBlockReaderConfig {
+                reader: config,
+                source_identity: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn open_with_byte_reader_config(
+        source: Arc<dyn ByteReader>,
+        block_size: u32,
+        config: XzBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
         if config.reader.footer_scan_window_bytes < XZ_FOOTER_LEN {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -204,46 +238,41 @@ impl XzBlockReader {
             ));
         }
 
-        let source_identity = config
-            .source_identity
-            .clone()
-            .unwrap_or_else(|| gibblox_core::block_identity_string(source.as_ref()));
-        let identity_config = config.with_source_identity(source_identity);
-        let config = identity_config.reader;
-
-        let block_size = source.block_size();
         if block_size == 0 || !block_size.is_power_of_two() {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
-                "source block size must be non-zero power of two",
+                "block size must be non-zero power of two",
             ));
         }
 
-        let source_total_blocks = source.total_blocks().await?;
-        let logical_size_bytes = source_total_blocks
-            .checked_mul(block_size as u64)
-            .ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "compressed stream size overflow",
-                )
-            })?;
-        if logical_size_bytes < (XZ_HEADER_LEN + XZ_FOOTER_LEN) as u64 {
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| byte_identity_string(source.as_ref()));
+        let identity_config = config.with_source_identity(source_identity);
+        let config = identity_config.reader;
+
+        let source_size_bytes = source.size_bytes().await?;
+        if source_size_bytes < (XZ_HEADER_LEN + XZ_FOOTER_LEN) as u64 {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 "input is too small to be a valid XZ stream",
             ));
         }
 
-        let byte_reader = AlignedByteReader::new(Arc::clone(&source)).await?;
-        let stream_header_vec = byte_reader
-            .read_vec_at(0, XZ_HEADER_LEN, ReadContext::FOREGROUND)
-            .await?;
+        let stream_header_vec = read_source_vec(
+            source.as_ref(),
+            source_size_bytes,
+            0,
+            XZ_HEADER_LEN,
+            ReadContext::FOREGROUND,
+        )
+        .await?;
         let stream_flags = parse_stream_header(&stream_header_vec)?;
 
         let layout = locate_stream_layout(
-            &byte_reader,
-            logical_size_bytes,
+            source.as_ref(),
+            source_size_bytes,
             stream_flags,
             config.footer_scan_window_bytes,
         )
@@ -302,7 +331,7 @@ impl XzBlockReader {
         debug!(
             compressed_size_bytes = layout.compressed_size,
             uncompressed_size_bytes = uncompressed_cursor,
-            source_block_size = block_size,
+            block_size,
             total_blocks,
             xz_blocks = blocks.len(),
             decoded_cache_entries = config.decoded_block_cache_entries,
@@ -312,12 +341,13 @@ impl XzBlockReader {
         Ok(Self {
             block_size,
             total_blocks,
+            source_size_bytes,
             uncompressed_size_bytes: uncompressed_cursor,
             compressed_size_bytes: layout.compressed_size,
             stream_header,
             stream_flags,
             blocks,
-            byte_reader,
+            source,
             config,
             identity_config,
             decoded_cache: Mutex::new(DecodedCacheState::new()),
@@ -454,10 +484,14 @@ impl XzBlockReader {
                 "XZ block size does not fit in memory on this platform",
             )
         })?;
-        let block_bytes = self
-            .byte_reader
-            .read_vec_at(block.compressed_start, block_len, ctx)
-            .await?;
+        let block_bytes = read_source_vec(
+            self.source.as_ref(),
+            self.source_size_bytes,
+            block.compressed_start,
+            block_len,
+            ctx,
+        )
+        .await?;
 
         let synthetic_stream = build_single_block_stream(
             &self.stream_header,
@@ -486,6 +520,78 @@ impl XzBlockReader {
         );
 
         Ok(decoded)
+    }
+
+    async fn read_uncompressed_range(
+        &self,
+        offset: u64,
+        out: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if offset >= self.uncompressed_size_bytes {
+            return Ok(0);
+        }
+
+        let available = self.uncompressed_size_bytes - offset;
+        let read_len = out.len().min(available as usize);
+        let read_end = offset.checked_add(read_len as u64).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "requested range overflow")
+        })?;
+
+        let mut cursor = offset;
+        while cursor < read_end {
+            let block_idx = self.block_index_for_offset(cursor)?;
+            let block = &self.blocks[block_idx];
+            let decoded = self.load_decoded_block(block_idx, ctx).await?;
+
+            let copy_end = read_end.min(block.uncompressed_end);
+            let src_start = usize::try_from(cursor - block.uncompressed_start).map_err(|_| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source offset overflow")
+            })?;
+            let src_end = usize::try_from(copy_end - block.uncompressed_start).map_err(|_| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source end overflow")
+            })?;
+
+            let dst_start = usize::try_from(cursor - offset).map_err(|_| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "destination offset overflow",
+                )
+            })?;
+            let dst_end = usize::try_from(copy_end - offset).map_err(|_| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "destination end overflow")
+            })?;
+
+            out[dst_start..dst_end].copy_from_slice(&decoded[src_start..src_end]);
+            cursor = copy_end;
+        }
+
+        Ok(read_len)
+    }
+}
+
+#[async_trait]
+impl ByteReader for XzBlockReader {
+    async fn size_bytes(&self) -> GibbloxResult<u64> {
+        Ok(self.uncompressed_size_bytes)
+    }
+
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        self.identity_config.write_identity(out)
+    }
+
+    async fn read_at(&self, offset: u64, buf: &mut [u8], ctx: ReadContext) -> GibbloxResult<usize> {
+        let read = self.read_uncompressed_range(offset, buf, ctx).await?;
+        trace!(
+            offset,
+            bytes = buf.len(),
+            effective_bytes = read,
+            "served xz byte read"
+        );
+        Ok(read)
     }
 }
 
@@ -526,45 +632,14 @@ impl BlockReader for XzBlockReader {
             ));
         }
 
-        let requested_end = read_start.checked_add(buf.len() as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "requested range overflow")
-        })?;
-        let read_end = requested_end.min(self.uncompressed_size_bytes);
-
         buf.fill(0);
-        let mut cursor = read_start;
-        while cursor < read_end {
-            let block_idx = self.block_index_for_offset(cursor)?;
-            let block = &self.blocks[block_idx];
-            let decoded = self.load_decoded_block(block_idx, ctx).await?;
-
-            let copy_end = read_end.min(block.uncompressed_end);
-            let src_start = usize::try_from(cursor - block.uncompressed_start).map_err(|_| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source offset overflow")
-            })?;
-            let src_end = usize::try_from(copy_end - block.uncompressed_start).map_err(|_| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source end overflow")
-            })?;
-
-            let dst_start = usize::try_from(cursor - read_start).map_err(|_| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "destination offset overflow",
-                )
-            })?;
-            let dst_end = usize::try_from(copy_end - read_start).map_err(|_| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "destination end overflow")
-            })?;
-
-            buf[dst_start..dst_end].copy_from_slice(&decoded[src_start..src_end]);
-            cursor = copy_end;
-        }
+        let read = self.read_uncompressed_range(read_start, buf, ctx).await?;
 
         trace!(
             lba,
             blocks,
             bytes = buf.len(),
-            effective_bytes = read_end - read_start,
+            effective_bytes = read,
             "served xz read"
         );
 
@@ -573,26 +648,23 @@ impl BlockReader for XzBlockReader {
 }
 
 async fn locate_stream_layout(
-    byte_reader: &AlignedByteReader,
-    logical_size_bytes: u64,
+    source: &dyn ByteReader,
+    source_size_bytes: u64,
     expected_stream_flags: [u8; 2],
     footer_scan_window_bytes: usize,
 ) -> GibbloxResult<StreamLayout> {
-    if logical_size_bytes < XZ_FOOTER_LEN as u64 {
+    if source_size_bytes < XZ_FOOTER_LEN as u64 {
         return Err(GibbloxError::with_message(
             GibbloxErrorKind::InvalidInput,
             "input too small for XZ footer",
         ));
     }
 
-    let min_scan = (byte_reader.block_size() as usize)
-        .saturating_mul(4)
-        .max(XZ_FOOTER_LEN);
-    let scan_window = footer_scan_window_bytes.max(min_scan);
+    let scan_window = footer_scan_window_bytes.max(XZ_FOOTER_LEN);
     let scan_window_u64 = scan_window as u64;
     let footer_overlap = (XZ_FOOTER_LEN - 1) as u64;
     let scan_step = scan_window_u64.saturating_sub(footer_overlap).max(1);
-    let mut scan_end = logical_size_bytes;
+    let mut scan_end = source_size_bytes;
 
     loop {
         let scan_start = scan_end.saturating_sub(scan_window_u64);
@@ -607,9 +679,14 @@ async fn locate_stream_layout(
             break;
         }
 
-        let tail = byte_reader
-            .read_vec_at(scan_start, scan_len, ReadContext::FOREGROUND)
-            .await?;
+        let tail = read_source_vec(
+            source,
+            source_size_bytes,
+            scan_start,
+            scan_len,
+            ReadContext::FOREGROUND,
+        )
+        .await?;
 
         let max_pos = scan_len - XZ_FOOTER_LEN;
         for rel in (0..=max_pos).rev() {
@@ -639,12 +716,33 @@ async fn locate_stream_layout(
                 Err(_) => continue,
             };
             let index_start = footer_offset - index_size;
-            let index_bytes = match byte_reader
-                .read_vec_at(index_start, index_len, ReadContext::FOREGROUND)
+            let index_end = match index_start.checked_add(index_size) {
+                Some(end) => end,
+                None => continue,
+            };
+            let index_bytes = if index_start >= scan_start && index_end <= scan_end {
+                let rel_start = match usize::try_from(index_start - scan_start) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                let rel_end = match rel_start.checked_add(index_len) {
+                    Some(value) => value,
+                    None => continue,
+                };
+                tail[rel_start..rel_end].to_vec()
+            } else {
+                match read_source_vec(
+                    source,
+                    source_size_bytes,
+                    index_start,
+                    index_len,
+                    ReadContext::FOREGROUND,
+                )
                 .await
-            {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
+                {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                }
             };
 
             let records = match parse_index_records(&index_bytes) {
@@ -696,6 +794,73 @@ async fn locate_stream_layout(
         GibbloxErrorKind::Unsupported,
         "could not locate a valid single-stream XZ footer/index",
     ))
+}
+
+fn byte_identity_string(source: &dyn ByteReader) -> String {
+    let mut value = String::new();
+    let _ = source.write_identity(&mut value);
+    value
+}
+
+async fn read_source_vec(
+    source: &dyn ByteReader,
+    source_size_bytes: u64,
+    offset: u64,
+    len: usize,
+    ctx: ReadContext,
+) -> GibbloxResult<Vec<u8>> {
+    let mut out = vec![0u8; len];
+    read_source_exact(source, source_size_bytes, offset, &mut out, ctx).await?;
+    Ok(out)
+}
+
+async fn read_source_exact(
+    source: &dyn ByteReader,
+    source_size_bytes: u64,
+    offset: u64,
+    out: &mut [u8],
+    ctx: ReadContext,
+) -> GibbloxResult<()> {
+    if out.is_empty() {
+        return Ok(());
+    }
+
+    let end = offset.checked_add(out.len() as u64).ok_or_else(|| {
+        GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read range overflow")
+    })?;
+    if end > source_size_bytes {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::OutOfRange,
+            "read range exceeds source size",
+        ));
+    }
+
+    let mut filled = 0usize;
+    while filled < out.len() {
+        let chunk_offset = offset.checked_add(filled as u64).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read offset overflow")
+        })?;
+        let read = source
+            .read_at(chunk_offset, &mut out[filled..], ctx)
+            .await?;
+        if read == 0 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::Io,
+                "short read from source",
+            ));
+        }
+        if read > out.len() - filled {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::Io,
+                "source returned more bytes than requested",
+            ));
+        }
+        filled = filled.checked_add(read).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read progress overflow")
+        })?;
+    }
+
+    Ok(())
 }
 
 fn parse_stream_header(header_bytes: &[u8]) -> GibbloxResult<[u8; 2]> {
@@ -1093,7 +1258,9 @@ mod tests {
     use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
     use async_trait::async_trait;
     use futures::executor::block_on;
-    use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+    use gibblox_core::{
+        BlockReader, ByteReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const FIXTURE_XZ_HEX: &str = "fd377a585a000004e6d6b4460200210116000000742fe5a301003f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f004bf2930b9be698d00200210116000000742fe5a301003f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f0050cc9737924cc2ce0200210116000000742fe5a301003f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf007d8e9b7389b22dec0200210116000000742fe5a301003fc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fa0001020304003f30b53c1763decd0200210116000000742fe5a301002b05060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30003e8eca7c8c57efac00055840584058405840442c20acdbdc14173b30030000000004595a";
@@ -1168,6 +1335,37 @@ mod tests {
                 buf[read..].fill(0);
             }
             Ok(buf.len())
+        }
+    }
+
+    #[async_trait]
+    impl ByteReader for FakeReader {
+        async fn size_bytes(&self) -> GibbloxResult<u64> {
+            Ok(self.data.len() as u64)
+        }
+
+        fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+            write!(out, "fake-xz-byte:{}:{}", self.block_size, self.data.len())
+        }
+
+        async fn read_at(
+            &self,
+            offset: u64,
+            buf: &mut [u8],
+            _ctx: ReadContext,
+        ) -> GibbloxResult<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            if offset >= self.data.len() as u64 {
+                return Ok(0);
+            }
+
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            let start = offset as usize;
+            let read = (self.data.len() - start).min(buf.len());
+            buf[..read].copy_from_slice(&self.data[start..start + read]);
+            Ok(read)
         }
     }
 
@@ -1295,6 +1493,26 @@ mod tests {
         let mut out = [0u8; 16];
         block_on(reader.read_blocks(0, &mut out, ReadContext::FOREGROUND)).expect("read");
         assert_eq!(out, fixture_payload()[..16]);
+    }
+
+    #[test]
+    fn opens_from_byte_reader_without_rereading_index_region() {
+        let compressed = fixture_xz_bytes();
+        let source = Arc::new(FakeReader::new(16, compressed));
+        let reader = block_on(XzBlockReader::new_from_byte_reader(
+            Arc::clone(&source) as Arc<dyn ByteReader>,
+            16,
+        ))
+        .expect("open xz reader from byte source");
+
+        // Opening performs one header read and one tail scan read.
+        assert_eq!(source.reads(), 2);
+
+        let mut out = [0u8; 24];
+        let read = block_on(reader.read_at(40, &mut out, ReadContext::FOREGROUND))
+            .expect("read byte range");
+        assert_eq!(read, out.len());
+        assert_eq!(out, fixture_payload()[40..64]);
     }
 
     fn fixture_payload() -> Vec<u8> {
