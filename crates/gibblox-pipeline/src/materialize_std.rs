@@ -6,6 +6,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use gibblox_android_sparse::AndroidSparseBlockReader;
+use gibblox_cache::CachedBlockReader;
+use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
 use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
@@ -16,13 +18,16 @@ use gibblox_core::{
     GptPartitionSelector,
 };
 use gibblox_file::FileReader;
-use gibblox_http::HttpReader;
+use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_xz::XzBlockReader;
+use tracing::warn;
 use url::Url;
 
 use crate::materialize_common::derive_casync_chunk_store_url;
-use crate::{PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string};
+use crate::{
+    PipelineCachePolicy, PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string,
+};
 
 pub type DynBlockReader = Arc<dyn BlockReader>;
 type DynByteReader = Arc<dyn ByteReader>;
@@ -31,6 +36,7 @@ type DynByteReader = Arc<dyn ByteReader>;
 pub struct OpenPipelineOptions {
     pub image_block_size: u32,
     pub casync_cache_dir: Option<PathBuf>,
+    pub cache_policy: PipelineCachePolicy,
 }
 
 impl Default for OpenPipelineOptions {
@@ -38,6 +44,7 @@ impl Default for OpenPipelineOptions {
         Self {
             image_block_size: 512,
             casync_cache_dir: Some(default_casync_cache_dir()),
+            cache_policy: PipelineCachePolicy::None,
         }
     }
 }
@@ -46,7 +53,8 @@ pub async fn open_pipeline(
     source: &PipelineSource,
     opts: &OpenPipelineOptions,
 ) -> Result<DynBlockReader> {
-    open_pipeline_source(source, opts).await
+    let reader = open_pipeline_source(source, opts).await?;
+    maybe_wrap_tail_cache(reader, opts).await
 }
 
 fn open_pipeline_source<'a>(
@@ -63,12 +71,14 @@ fn open_pipeline_source<'a>(
 
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
-                let reader = HttpReader::new(url.clone(), opts.image_block_size)
+                let config = HttpReaderConfig::new(url.clone(), opts.image_block_size);
+                let reader = HttpReader::open(config.clone())
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
                 let reader = BlockByteReader::new(reader, opts.image_block_size)
                     .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
-                Ok(Arc::new(reader) as DynBlockReader)
+                let reader: DynBlockReader = Arc::new(reader);
+                maybe_wrap_head_http_cache(reader, &config, opts).await
             }
             PipelineSource::File(source) => {
                 let value = source.file.trim();
@@ -179,6 +189,57 @@ fn open_pipeline_byte_source<'a>(
             }
         }
     })
+}
+
+async fn maybe_wrap_head_http_cache(
+    reader: DynBlockReader,
+    config: &HttpReaderConfig,
+    opts: &OpenPipelineOptions,
+) -> Result<DynBlockReader> {
+    if opts.cache_policy != PipelineCachePolicy::Head {
+        return Ok(reader);
+    }
+
+    let cache = match StdCacheOps::open_default_for_config(config) {
+        Ok(cache) => cache,
+        Err(err) => {
+            warn!(error = %err, "failed to open std cache for HTTP source, using uncached reader");
+            return Ok(reader);
+        }
+    };
+
+    match CachedBlockReader::new(Arc::clone(&reader), cache).await {
+        Ok(cached) => Ok(Arc::new(cached)),
+        Err(err) => {
+            warn!(error = %err, "failed to initialize cached HTTP reader, using uncached reader");
+            Ok(reader)
+        }
+    }
+}
+
+async fn maybe_wrap_tail_cache(
+    reader: DynBlockReader,
+    opts: &OpenPipelineOptions,
+) -> Result<DynBlockReader> {
+    if opts.cache_policy != PipelineCachePolicy::Tail {
+        return Ok(reader);
+    }
+
+    let cache = match StdCacheOps::open_default_for_reader(&reader).await {
+        Ok(cache) => cache,
+        Err(err) => {
+            warn!(error = %err, "failed to open std cache for pipeline tail, using uncached reader");
+            return Ok(reader);
+        }
+    };
+
+    match CachedBlockReader::new(Arc::clone(&reader), cache).await {
+        Ok(cached) => Ok(Arc::new(cached)),
+        Err(err) => {
+            warn!(error = %err, "failed to initialize cached pipeline tail reader, using uncached reader");
+            Ok(reader)
+        }
+    }
 }
 
 async fn open_casync_source(

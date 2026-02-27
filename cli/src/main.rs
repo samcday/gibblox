@@ -9,8 +9,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use gibblox_core::{BlockReader, ReadContext, WindowBlockReader};
 use gibblox_pipeline::{
-    OpenPipelineOptions, PipelineSource, decode_pipeline, encode_pipeline, open_pipeline,
-    pipeline_bin_header_version, validate_pipeline,
+    OpenPipelineOptions, PipelineCachePolicy, PipelineSource, decode_pipeline, encode_pipeline,
+    open_pipeline, pipeline_bin_header_version, validate_pipeline,
 };
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -19,6 +19,23 @@ const DEFAULT_SOURCE_BLOCK_SIZE: u32 = 4096;
 const STREAM_BLOCK_WINDOW: usize = 256;
 
 type DynBlockReader = Arc<dyn BlockReader>;
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum CliCachePolicy {
+    None,
+    Head,
+    Tail,
+}
+
+impl From<CliCachePolicy> for PipelineCachePolicy {
+    fn from(value: CliCachePolicy) -> Self {
+        match value {
+            CliCachePolicy::None => Self::None,
+            CliCachePolicy::Head => Self::Head,
+            CliCachePolicy::Tail => Self::Tail,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -43,6 +60,9 @@ struct Cli {
     /// Logical block size exposed by CLI output reads.
     #[arg(long, value_name = "BLOCK_SIZE", requires = "pipeline")]
     blocksize: Option<u32>,
+    /// Cache placement policy (`none`, `head`, or `tail`).
+    #[arg(long, value_name = "POLICY", value_enum, requires = "pipeline")]
+    cache_policy: Option<CliCachePolicy>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -110,10 +130,11 @@ async fn main() -> Result<()> {
             || cli.output.is_some()
             || cli.start.is_some()
             || cli.count.is_some()
-            || cli.blocksize.is_some())
+            || cli.blocksize.is_some()
+            || cli.cache_policy.is_some())
     {
         bail!(
-            "PIPELINE, --output, --start, --count, and --blocksize cannot be used with subcommands"
+            "PIPELINE, --output, --start, --count, --blocksize, and --cache-policy cannot be used with subcommands"
         );
     }
 
@@ -130,6 +151,7 @@ async fn main() -> Result<()> {
                 cli.start.unwrap_or(0),
                 cli.count,
                 cli.blocksize,
+                cli.cache_policy,
             )
             .await
         }
@@ -157,6 +179,7 @@ async fn run_default_pipeline_execute(
     start_blocks: u64,
     count_blocks: Option<u64>,
     requested_block_size: Option<u32>,
+    cache_policy: Option<CliCachePolicy>,
 ) -> Result<()> {
     validate_binary_output(
         output_path,
@@ -166,6 +189,9 @@ async fn run_default_pipeline_execute(
 
     let output_block_size = requested_block_size.unwrap_or(DEFAULT_IMAGE_BLOCK_SIZE);
     validate_image_block_size(output_block_size)?;
+    let cache_policy = cache_policy
+        .map(PipelineCachePolicy::from)
+        .unwrap_or(PipelineCachePolicy::None);
 
     let input = read_input_bytes(input_path)?;
     let source = parse_pipeline_document(&input, input_path)?;
@@ -176,6 +202,7 @@ async fn run_default_pipeline_execute(
         &source,
         &OpenPipelineOptions {
             image_block_size: DEFAULT_SOURCE_BLOCK_SIZE,
+            cache_policy,
             ..OpenPipelineOptions::default()
         },
     )
@@ -465,6 +492,22 @@ mod tests {
         assert_eq!(cli.start, Some(8));
         assert_eq!(cli.count, Some(16));
         assert_eq!(cli.blocksize, Some(4096));
+    }
+
+    #[test]
+    fn parse_top_level_pipeline_cache_policy() {
+        let cli = Cli::parse_from([
+            "gibblox-cli",
+            "pipeline.yaml",
+            "--output",
+            "out.img",
+            "--cache-policy",
+            "tail",
+        ]);
+        assert!(matches!(
+            cli.cache_policy,
+            Some(super::CliCachePolicy::Tail)
+        ));
     }
 
     #[test]

@@ -17,11 +17,14 @@ std = [
     "gibblox-http/native-client",
     "dep:anyhow",
     "dep:gibblox-android-sparse",
+    "dep:gibblox-cache",
+    "dep:gibblox-cache-store-std",
     "dep:gibblox-casync",
     "dep:gibblox-casync-std",
     "dep:gibblox-file",
     "dep:gibblox-http",
     "dep:gibblox-mbr",
+    "dep:tracing",
     "dep:gibblox-xz",
     "dep:url",
 ]
@@ -48,6 +51,7 @@ web = [
 anyhow = { version = "1.0.95", optional = true }
 gibblox-android-sparse = { workspace = true, features = ["std"], optional = true }
 gibblox-cache = { workspace = true, optional = true }
+gibblox-cache-store-std = { workspace = true, optional = true }
 gibblox-cache-store-opfs = { workspace = true, optional = true }
 gibblox-casync = { workspace = true, features = ["std"], optional = true }
 gibblox-casync-std = { workspace = true, optional = true }

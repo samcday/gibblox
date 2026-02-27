@@ -18,7 +18,9 @@ use tracing::warn;
 use url::Url;
 
 use crate::materialize_common::derive_casync_chunk_store_url;
-use crate::{PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string};
+use crate::{
+    PipelineCachePolicy, PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string,
+};
 
 type DynBlockReader = Arc<dyn BlockReader>;
 type DynByteReader = Arc<dyn ByteReader>;
@@ -26,6 +28,7 @@ type DynByteReader = Arc<dyn ByteReader>;
 #[derive(Clone, Debug)]
 pub struct OpenPipelineOptions {
     pub image_block_size: u32,
+    pub cache_policy: Option<PipelineCachePolicy>,
     pub cache_http_sources: bool,
 }
 
@@ -33,6 +36,7 @@ impl Default for OpenPipelineOptions {
     fn default() -> Self {
         Self {
             image_block_size: 512,
+            cache_policy: None,
             cache_http_sources: true,
         }
     }
@@ -42,7 +46,8 @@ pub async fn open_pipeline(
     source: &PipelineSource,
     opts: &OpenPipelineOptions,
 ) -> GibbloxResult<DynBlockReader> {
-    resolve_pipeline_source(source, opts).await
+    let reader = resolve_pipeline_source(source, opts).await?;
+    maybe_wrap_tail_cache(reader, opts).await
 }
 
 fn resolve_pipeline_source<'a>(
@@ -139,29 +144,8 @@ async fn resolve_http_source(
         HttpReader::open(config.clone()).await?,
         opts.image_block_size,
     )?;
-
-    if !opts.cache_http_sources {
-        return Ok(Arc::new(reader));
-    }
-
-    let cache = match OpfsCacheOps::open_for_config(&config).await {
-        Ok(cache) => cache,
-        Err(err) => {
-            warn!(error = %err, "failed to open OPFS cache for HTTP source, using uncached reader");
-            return Ok(Arc::new(reader));
-        }
-    };
-
-    match CachedBlockReader::new(reader, cache).await {
-        Ok(cached) => Ok(Arc::new(cached)),
-        Err(err) => {
-            warn!(error = %err, "failed to initialize cached HTTP reader, using uncached reader");
-            Ok(Arc::new(BlockByteReader::new(
-                HttpReader::open(config).await?,
-                opts.image_block_size,
-            )?))
-        }
-    }
+    let reader: Arc<dyn BlockReader> = Arc::new(reader);
+    maybe_wrap_head_http_cache(reader, &config, opts).await
 }
 
 async fn resolve_casync_source(
@@ -226,6 +210,69 @@ fn gpt_selector(source: &crate::PipelineSourceGptSource) -> GibbloxResult<GptPar
 
 fn source_identity(source: &PipelineSource) -> String {
     pipeline_identity_string(source)
+}
+
+fn effective_cache_policy(opts: &OpenPipelineOptions) -> PipelineCachePolicy {
+    if let Some(policy) = opts.cache_policy {
+        return policy;
+    }
+
+    if opts.cache_http_sources {
+        PipelineCachePolicy::Head
+    } else {
+        PipelineCachePolicy::None
+    }
+}
+
+async fn maybe_wrap_head_http_cache(
+    reader: Arc<dyn BlockReader>,
+    config: &HttpReaderConfig,
+    opts: &OpenPipelineOptions,
+) -> GibbloxResult<Arc<dyn BlockReader>> {
+    if effective_cache_policy(opts) != PipelineCachePolicy::Head {
+        return Ok(reader);
+    }
+
+    let cache = match OpfsCacheOps::open_for_config(config).await {
+        Ok(cache) => cache,
+        Err(err) => {
+            warn!(error = %err, "failed to open OPFS cache for HTTP source, using uncached reader");
+            return Ok(reader);
+        }
+    };
+
+    match CachedBlockReader::new(Arc::clone(&reader), cache).await {
+        Ok(cached) => Ok(Arc::new(cached)),
+        Err(err) => {
+            warn!(error = %err, "failed to initialize cached HTTP reader, using uncached reader");
+            Ok(reader)
+        }
+    }
+}
+
+async fn maybe_wrap_tail_cache(
+    reader: Arc<dyn BlockReader>,
+    opts: &OpenPipelineOptions,
+) -> GibbloxResult<Arc<dyn BlockReader>> {
+    if effective_cache_policy(opts) != PipelineCachePolicy::Tail {
+        return Ok(reader);
+    }
+
+    let cache = match OpfsCacheOps::open_for_reader(&reader).await {
+        Ok(cache) => cache,
+        Err(err) => {
+            warn!(error = %err, "failed to open OPFS cache for pipeline tail, using uncached reader");
+            return Ok(reader);
+        }
+    };
+
+    match CachedBlockReader::new(Arc::clone(&reader), cache).await {
+        Ok(cached) => Ok(Arc::new(cached)),
+        Err(err) => {
+            warn!(error = %err, "failed to initialize cached pipeline tail reader, using uncached reader");
+            Ok(reader)
+        }
+    }
 }
 
 fn parse_url(value: &str, context: &str) -> GibbloxResult<Url> {

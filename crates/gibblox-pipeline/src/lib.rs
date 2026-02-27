@@ -111,6 +111,35 @@ pub fn pipeline_identity_id(source: &PipelineSource) -> u32 {
     derive_config_identity_id(source)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineCachePolicy {
+    None,
+    Head,
+    Tail,
+}
+
+impl PipelineCachePolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Head => "head",
+            Self::Tail => "tail",
+        }
+    }
+}
+
+impl fmt::Display for PipelineCachePolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Default for PipelineCachePolicy {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PipelineValidationError {
     EmptyHttp,
