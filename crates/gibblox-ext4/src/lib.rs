@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use core::{error::Error, fmt};
 use ext4_view::Ext4ReadAsync;
 use gibblox_core::{
-    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
-    ReadContext, block_identity_string,
+    BlockByteReader, BlockReader, BlockReaderConfigIdentity, ByteReader, GibbloxError,
+    GibbloxErrorKind, GibbloxResult, ReadContext, block_identity_string,
 };
 use tracing::{info, trace};
 
@@ -287,6 +287,43 @@ impl Ext4FileBlockReader {
 }
 
 #[async_trait]
+impl ByteReader for Ext4FileBlockReader {
+    async fn size_bytes(&self) -> GibbloxResult<u64> {
+        Ok(self.file_size_bytes)
+    }
+
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        self.config.write_identity(out)
+    }
+
+    async fn read_at(
+        &self,
+        offset: u64,
+        buf: &mut [u8],
+        _ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if offset >= self.file_size_bytes {
+            return Ok(0);
+        }
+
+        let read_len = ((buf.len() as u64).min(self.file_size_bytes - offset)) as usize;
+        let fs = pollster::block_on(Ext4Fs::open(Arc::clone(&self.source)))?;
+        let data = fs.read_range_sync(self.file_path.as_str(), offset, read_len)?;
+        if data.len() < read_len {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::Io,
+                "short read from ext4 file",
+            ));
+        }
+        buf[..read_len].copy_from_slice(&data[..read_len]);
+        Ok(read_len)
+    }
+}
+
+#[async_trait]
 impl BlockReader for Ext4FileBlockReader {
     fn block_size(&self) -> u32 {
         self.block_size
@@ -304,42 +341,12 @@ impl BlockReader for Ext4FileBlockReader {
         &self,
         lba: u64,
         buf: &mut [u8],
-        _ctx: ReadContext,
+        ctx: ReadContext,
     ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if !buf.len().is_multiple_of(self.block_size as usize) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must align to block size",
-            ));
-        }
-
-        let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-        })?;
-        if offset >= self.file_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            ));
-        }
-
-        let read_len = ((buf.len() as u64).min(self.file_size_bytes - offset)) as usize;
-        let fs = pollster::block_on(Ext4Fs::open(Arc::clone(&self.source)))?;
-        let data = fs.read_range_sync(self.file_path.as_str(), offset, read_len)?;
-        if data.len() < read_len {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::Io,
-                "short read from ext4 file",
-            ));
-        }
-        buf[..read_len].copy_from_slice(&data[..read_len]);
-        if read_len < buf.len() {
-            buf[read_len..].fill(0);
-        }
-        Ok(buf.len())
+        let adapter = BlockByteReader::new(self, self.block_size)?;
+        let read = adapter.read_blocks(lba, buf, ctx).await?;
+        trace!(lba, requested = buf.len(), read, "reading ext4 file blocks");
+        Ok(read)
     }
 }
 

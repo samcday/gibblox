@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use gibblox_core::{
-    BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
-    ReadContext,
+    BlockByteReader, BlockReader, BlockReaderConfigIdentity, ByteReader, GibbloxError,
+    GibbloxErrorKind, GibbloxResult, ReadContext,
 };
 use tracing::{debug, trace};
 
@@ -118,6 +118,43 @@ impl StdFileBlockReader {
 }
 
 #[async_trait]
+impl ByteReader for StdFileBlockReader {
+    async fn size_bytes(&self) -> GibbloxResult<u64> {
+        Ok(self.size_bytes)
+    }
+
+    fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        self.config.write_identity(out)
+    }
+
+    async fn read_at(
+        &self,
+        offset: u64,
+        buf: &mut [u8],
+        _ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if offset >= self.size_bytes {
+            return Ok(0);
+        }
+
+        let read_len = (buf.len() as u64).min(self.size_bytes - offset) as usize;
+        let read = read_file_at(&self.file, &mut buf[..read_len], offset)
+            .map_err(map_io_err("read file"))?;
+
+        trace!(
+            offset,
+            requested = read_len,
+            read,
+            "performed file byte read"
+        );
+        Ok(read)
+    }
+}
+
+#[async_trait]
 impl BlockReader for StdFileBlockReader {
     fn block_size(&self) -> u32 {
         self.config.block_size
@@ -135,45 +172,17 @@ impl BlockReader for StdFileBlockReader {
         &self,
         lba: u64,
         buf: &mut [u8],
-        _ctx: ReadContext,
+        ctx: ReadContext,
     ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if !buf.len().is_multiple_of(self.config.block_size as usize) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must align to block size",
-            ));
-        }
-
-        let total_blocks = self.total_blocks().await?;
-        if lba >= total_blocks {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            ));
-        }
-
-        let offset = lba
-            .checked_mul(self.config.block_size as u64)
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-            })?;
-
-        let read = read_file_at(&self.file, buf, offset).map_err(map_io_err("read file"))?;
-        if read < buf.len() {
-            buf[read..].fill(0);
-        }
-
+        let adapter = BlockByteReader::new(self, self.config.block_size)?;
+        let read = adapter.read_blocks(lba, buf, ctx).await?;
         trace!(
             lba,
-            offset,
             requested = buf.len(),
             read,
             "performed file block read"
         );
-        Ok(buf.len())
+        Ok(read)
     }
 }
 

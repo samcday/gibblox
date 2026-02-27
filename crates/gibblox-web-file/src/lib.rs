@@ -13,8 +13,8 @@ mod wasm {
         task::{Context, Poll},
     };
     use gibblox_core::{
-        BlockReader, BlockReaderConfigIdentity, GibbloxError, GibbloxErrorKind, GibbloxResult,
-        ReadContext,
+        BlockByteReader, BlockReader, BlockReaderConfigIdentity, ByteReader, GibbloxError,
+        GibbloxErrorKind, GibbloxResult, ReadContext,
     };
     use js_sys::{Promise, Uint8Array};
     use tracing::{debug, trace};
@@ -132,51 +132,28 @@ mod wasm {
     }
 
     #[async_trait]
-    impl BlockReader for WebFileBlockReader {
-        fn block_size(&self) -> u32 {
-            self.config.block_size
-        }
-
-        async fn total_blocks(&self) -> GibbloxResult<u64> {
-            Ok(self
-                .config
-                .size_bytes
-                .div_ceil(self.config.block_size as u64))
+    impl ByteReader for WebFileBlockReader {
+        async fn size_bytes(&self) -> GibbloxResult<u64> {
+            Ok(self.config.size_bytes)
         }
 
         fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
             self.config.write_identity(out)
         }
 
-        async fn read_blocks(
+        async fn read_at(
             &self,
-            lba: u64,
+            offset: u64,
             buf: &mut [u8],
             _ctx: ReadContext,
         ) -> GibbloxResult<usize> {
             if buf.is_empty() {
                 return Ok(0);
             }
-            if !buf.len().is_multiple_of(self.config.block_size as usize) {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::InvalidInput,
-                    "buffer length must align to block size",
-                ));
+            if offset >= self.config.size_bytes {
+                return Ok(0);
             }
 
-            let total_blocks = self.total_blocks().await?;
-            if lba >= total_blocks {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "requested block out of range",
-                ));
-            }
-
-            let offset = lba
-                .checked_mul(self.config.block_size as u64)
-                .ok_or_else(|| {
-                    GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
-                })?;
             let remaining = self.config.size_bytes.checked_sub(offset).ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset out of range")
             })?;
@@ -200,26 +177,55 @@ mod wasm {
             let bytes = Uint8Array::new(&buffer);
 
             let available = bytes.length() as usize;
-            let read = read_len.min(available);
-            bytes.subarray(0, read as u32).copy_to(&mut buf[..read]);
-            if read < read_len {
-                debug!(
-                    expected = read_len,
-                    read, "short read while reading web file slice"
-                );
+            if available < read_len {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    format!(
+                        "short read while reading web file slice: expected {read_len}, got {available}"
+                    ),
+                ));
             }
-            if read < buf.len() {
-                buf[read..].fill(0);
-            }
+            bytes
+                .subarray(0, read_len as u32)
+                .copy_to(&mut buf[..read_len]);
 
+            trace!(offset, requested = read_len, "performed web file byte read");
+            Ok(read_len)
+        }
+    }
+
+    #[async_trait]
+    impl BlockReader for WebFileBlockReader {
+        fn block_size(&self) -> u32 {
+            self.config.block_size
+        }
+
+        async fn total_blocks(&self) -> GibbloxResult<u64> {
+            Ok(self
+                .config
+                .size_bytes
+                .div_ceil(self.config.block_size as u64))
+        }
+
+        fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+            self.config.write_identity(out)
+        }
+
+        async fn read_blocks(
+            &self,
+            lba: u64,
+            buf: &mut [u8],
+            ctx: ReadContext,
+        ) -> GibbloxResult<usize> {
+            let adapter = BlockByteReader::new(self, self.config.block_size)?;
+            let read = adapter.read_blocks(lba, buf, ctx).await?;
             trace!(
                 lba,
-                offset,
                 requested = buf.len(),
                 read,
                 "performed web file block read"
             );
-            Ok(buf.len())
+            Ok(read)
         }
     }
 
