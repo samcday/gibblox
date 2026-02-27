@@ -8,10 +8,10 @@ use gibblox_cache_store_opfs::OpfsCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
 use gibblox_casync_web::{WebCasyncChunkStore, WebCasyncChunkStoreConfig, WebCasyncIndexSource};
 use gibblox_core::{
-    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, GptBlockReader,
+    BlockByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, GptBlockReader,
     GptPartitionSelector,
 };
-use gibblox_http::{HttpBlockReader, HttpBlockReaderConfig};
+use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
 use gibblox_xz::{XzBlockReader, XzBlockReaderConfig};
 use tracing::warn;
@@ -102,8 +102,11 @@ async fn resolve_http_source(
     opts: &OpenPipelineOptions,
 ) -> GibbloxResult<Arc<dyn BlockReader>> {
     let url = parse_url(source.http.as_str(), "pipeline http source")?;
-    let config = HttpBlockReaderConfig::new(url, opts.image_block_size);
-    let reader = HttpBlockReader::open(config.clone()).await?;
+    let config = HttpReaderConfig::new(url, opts.image_block_size);
+    let reader = BlockByteReader::new(
+        HttpReader::open(config.clone()).await?,
+        opts.image_block_size,
+    )?;
 
     if !opts.cache_http_sources {
         return Ok(Arc::new(reader));
@@ -121,7 +124,10 @@ async fn resolve_http_source(
         Ok(cached) => Ok(Arc::new(cached)),
         Err(err) => {
             warn!(error = %err, "failed to initialize cached HTTP reader, using uncached reader");
-            Ok(Arc::new(HttpBlockReader::open(config).await?))
+            Ok(Arc::new(BlockByteReader::new(
+                HttpReader::open(config).await?,
+                opts.image_block_size,
+            )?))
         }
     }
 }
