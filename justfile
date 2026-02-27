@@ -51,8 +51,14 @@ bump version:
         package = member_doc.get("package")
         if isinstance(package, dict):
             name = package.get("name")
-            if isinstance(name, str):
-                member_names.add(name)
+            if not isinstance(name, str):
+                continue
+
+            publish = package.get("publish")
+            if publish is False or publish == []:
+                continue
+
+            member_names.add(name)
 
     new_text, package_updates = re.subn(
         r'(?ms)(^\[workspace\.package\]\n(?:.*\n)*?^version\s*=\s*")[^"]*(")',
@@ -102,7 +108,7 @@ bump version:
     missing = sorted(member_names - seen)
     if missing:
         raise SystemExit(
-            "Missing workspace.dependencies entries for workspace members: "
+            "Missing workspace.dependencies entries for publishable workspace members: "
             + ", ".join(missing)
         )
 
@@ -115,13 +121,13 @@ bump version:
     PY
 
     after="$(cksum Cargo.toml)"
+    cargo update --workspace
+
     if [[ "$before" == "$after" ]]; then
         echo "Workspace version and workspace crate dependency versions already set to $version"
-        exit 0
+    else
+        echo "Bumped workspace version and workspace crate dependency versions to $version"
     fi
-
-    cargo generate-lockfile
-    echo "Bumped workspace version and workspace crate dependency versions to $version"
 
 publish-dry-run:
     #!/usr/bin/env bash
