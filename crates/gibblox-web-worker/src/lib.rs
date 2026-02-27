@@ -7,8 +7,8 @@ mod wasm {
     };
     use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
     use gibblox_pipeline::{
-        OpenWebPipelineOptions, decode_pipeline, open_pipeline_web, pipeline_identity_id,
-        pipeline_identity_string, validate_pipeline,
+        OpenWebPipelineOptions, PipelineCachePolicy, decode_pipeline, open_pipeline_web,
+        pipeline_identity_id, pipeline_identity_string, validate_pipeline,
     };
     use gloo_timers::future::sleep;
     use js_sys::{Array, Object, Reflect, Uint8Array};
@@ -39,6 +39,12 @@ mod wasm {
         pub identity: String,
         pub size_bytes: u64,
         pub reader: MessagePortBlockReaderClient,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct OpenPipelineRequestOptions {
+        pub image_block_size: Option<u32>,
+        pub cache_policy: Option<PipelineCachePolicy>,
     }
 
     #[derive(Clone)]
@@ -212,6 +218,15 @@ mod wasm {
             &self,
             pipeline_bytes: &[u8],
         ) -> GibbloxResult<OpenPipelineResult> {
+            self.open_pipeline_with_options(pipeline_bytes, &OpenPipelineRequestOptions::default())
+                .await
+        }
+
+        pub async fn open_pipeline_with_options(
+            &self,
+            pipeline_bytes: &[u8],
+            options: &OpenPipelineRequestOptions,
+        ) -> GibbloxResult<OpenPipelineResult> {
             let len = u32::try_from(pipeline_bytes.len()).map_err(|_| {
                 GibbloxError::with_message(
                     GibbloxErrorKind::OutOfRange,
@@ -234,6 +249,32 @@ mod wasm {
                 bytes.into(),
                 "build open_pipeline request",
             )?;
+
+            if options.image_block_size.is_some() || options.cache_policy.is_some() {
+                let request_options = Object::new();
+                if let Some(image_block_size) = options.image_block_size {
+                    set_prop(
+                        &request_options,
+                        "image_block_size",
+                        JsValue::from_f64(image_block_size as f64),
+                        "build open_pipeline request",
+                    )?;
+                }
+                if let Some(cache_policy) = options.cache_policy {
+                    set_prop(
+                        &request_options,
+                        "cache_policy",
+                        JsValue::from_str(cache_policy.as_str()),
+                        "build open_pipeline request",
+                    )?;
+                }
+                set_prop(
+                    &request,
+                    "options",
+                    request_options.into(),
+                    "build open_pipeline request",
+                )?;
+            }
 
             let response = self.request(request, None).await?;
             let identity = prop_string(response.as_js_value(), "identity")?;
@@ -451,21 +492,41 @@ mod wasm {
             )
         })?;
 
+        let open_options = parse_open_pipeline_options(data)?;
+
         let identity = pipeline_identity_string(&pipeline);
         let identity_id = pipeline_identity_id(&pipeline);
+        let endpoint_key = pipeline_endpoint_key(identity.as_str(), &open_options);
+        let cache_policy = effective_cache_policy(&open_options);
+        let image_block_size = open_options.image_block_size;
 
-        let reader = if let Some(reader) = state.borrow().readers.get(identity.as_str()).cloned() {
-            debug!(identity = %identity, identity_id, "reusing resolved pipeline reader");
-            reader
-        } else {
-            let reader = open_pipeline_web(&pipeline, &OpenWebPipelineOptions::default()).await?;
-            state
-                .borrow_mut()
-                .readers
-                .insert(identity.clone(), Arc::clone(&reader));
-            info!(identity = %identity, identity_id, "resolved new pipeline reader");
-            reader
-        };
+        let reader =
+            if let Some(reader) = state.borrow().readers.get(endpoint_key.as_str()).cloned() {
+                debug!(
+                    identity = %identity,
+                    identity_id,
+                    endpoint_key = %endpoint_key,
+                    cache_policy = %cache_policy,
+                    image_block_size,
+                    "reusing resolved pipeline reader"
+                );
+                reader
+            } else {
+                let reader = open_pipeline_web(&pipeline, &open_options).await?;
+                state
+                    .borrow_mut()
+                    .readers
+                    .insert(endpoint_key.clone(), Arc::clone(&reader));
+                info!(
+                    identity = %identity,
+                    identity_id,
+                    endpoint_key = %endpoint_key,
+                    cache_policy = %cache_policy,
+                    image_block_size,
+                    "resolved new pipeline reader"
+                );
+                reader
+            };
 
         let size_bytes = size_bytes_for_reader(Arc::clone(&reader)).await?;
 
@@ -485,6 +546,78 @@ mod wasm {
             .ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "size overflow")
             })
+    }
+
+    fn parse_open_pipeline_options(data: &JsValue) -> GibbloxResult<OpenWebPipelineOptions> {
+        let mut options = OpenWebPipelineOptions::default();
+        let raw = Reflect::get(data, &JsValue::from_str("options")).map_err(js_io)?;
+        if raw.is_undefined() || raw.is_null() {
+            return Ok(options);
+        }
+        if !raw.is_object() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "field options is not an object",
+            ));
+        }
+
+        if let Some(image_block_size) = prop_u32_opt(&raw, "image_block_size") {
+            options.image_block_size = image_block_size;
+        }
+        if let Some(cache_http_sources) = prop_bool_opt(&raw, "cache_http_sources") {
+            options.cache_http_sources = cache_http_sources;
+        }
+
+        let raw_policy = Reflect::get(&raw, &JsValue::from_str("cache_policy")).map_err(js_io)?;
+        if !raw_policy.is_undefined() && !raw_policy.is_null() {
+            let policy = raw_policy.as_string().ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    "field options.cache_policy is not a string",
+                )
+            })?;
+            let policy = match parse_cache_policy(policy.as_str()) {
+                Some(policy) => policy,
+                None => {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::InvalidInput,
+                        format!("field options.cache_policy has invalid value: {policy}"),
+                    ));
+                }
+            };
+            options.cache_policy = Some(policy);
+        }
+
+        Ok(options)
+    }
+
+    fn parse_cache_policy(value: &str) -> Option<PipelineCachePolicy> {
+        match value.to_ascii_lowercase().as_str() {
+            "none" => Some(PipelineCachePolicy::None),
+            "head" => Some(PipelineCachePolicy::Head),
+            "tail" => Some(PipelineCachePolicy::Tail),
+            _ => None,
+        }
+    }
+
+    fn effective_cache_policy(options: &OpenWebPipelineOptions) -> PipelineCachePolicy {
+        if let Some(policy) = options.cache_policy {
+            return policy;
+        }
+
+        if options.cache_http_sources {
+            PipelineCachePolicy::Head
+        } else {
+            PipelineCachePolicy::None
+        }
+    }
+
+    fn pipeline_endpoint_key(identity: &str, options: &OpenWebPipelineOptions) -> String {
+        format!(
+            "{identity}:block_size={}:cache_policy={}",
+            options.image_block_size,
+            effective_cache_policy(options)
+        )
     }
 
     fn parse_worker_metadata(data: &JsValue) -> GibbloxResult<WorkerMetadata> {
@@ -689,6 +822,12 @@ mod wasm {
                     format!("field {key} is missing or not a bool"),
                 )
             })
+    }
+
+    fn prop_bool_opt(target: &JsValue, key: &str) -> Option<bool> {
+        Reflect::get(target, &JsValue::from_str(key))
+            .ok()
+            .and_then(|value| value.as_bool())
     }
 
     fn prop_u64_string(target: &JsValue, key: &str) -> GibbloxResult<u64> {

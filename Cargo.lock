@@ -831,6 +831,7 @@ dependencies = [
  "gibblox-android-sparse",
  "gibblox-cache",
  "gibblox-cache-store-opfs",
+ "gibblox-cache-store-std",
  "gibblox-casync",
  "gibblox-casync-std",
  "gibblox-casync-web",
