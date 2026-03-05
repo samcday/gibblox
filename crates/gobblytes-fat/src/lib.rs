@@ -29,7 +29,7 @@ use hadris_fat::r#async::{
     },
     read::FileReader as HFileReader,
 };
-use tracing::info;
+use tracing::{debug, info};
 
 const FAT_ATTR_DIRECTORY: u8 = 0x10;
 const FAT_ATTR_VOLUME_ID: u8 = 0x08;
@@ -261,8 +261,14 @@ impl FatFs {
         let mut out = Vec::new();
         let mut iter = dir.entries();
         while let Some(next) = iter.next_entry().await {
-            let HDirectoryEntry::Entry(entry) =
-                next.map_err(|err| map_fat_error("read FAT directory entry", err))?;
+            let entry = match next {
+                Ok(HDirectoryEntry::Entry(entry)) => entry,
+                Err(HFatError::InvalidShortFilename) => {
+                    debug!("skipping FAT directory entry with invalid short filename");
+                    continue;
+                }
+                Err(err) => return Err(map_fat_error("read FAT directory entry", err)),
+            };
             if is_dot_name(entry.name()) || is_volume_label(&entry) {
                 continue;
             }
@@ -321,8 +327,17 @@ impl FatFs {
     ) -> GibbloxResult<Option<HFileEntry>> {
         let mut iter = dir.entries();
         while let Some(next) = iter.next_entry().await {
-            let HDirectoryEntry::Entry(entry) =
-                next.map_err(|err| map_fat_error("read FAT directory entry", err))?;
+            let entry = match next {
+                Ok(HDirectoryEntry::Entry(entry)) => entry,
+                Err(HFatError::InvalidShortFilename) => {
+                    debug!(
+                        wanted,
+                        "skipping FAT directory entry with invalid short filename"
+                    );
+                    continue;
+                }
+                Err(err) => return Err(map_fat_error("read FAT directory entry", err)),
+            };
 
             if is_dot_name(entry.name()) || is_volume_label(&entry) {
                 continue;
@@ -670,6 +685,26 @@ mod tests {
         assert_eq!(err.kind(), GibbloxErrorKind::Unsupported);
     }
 
+    #[test]
+    fn skips_invalid_short_filename_entries() {
+        let mut image = build_test_fat32_image();
+        inject_invalid_volume_label_root_entry(&mut image);
+        let fs = block_on(FatFs::open(FakeReader {
+            block_size: TEST_BLOCK_SIZE,
+            data: image,
+        }))
+        .expect("open FAT32 image");
+
+        let kernel = block_on(fs.read_all("/vmlinuz")).expect("read /vmlinuz");
+        assert_eq!(&kernel, b"hello kernel");
+
+        let has_kernel = block_on(fs.exists("/vmlinuz")).expect("resolve /vmlinuz");
+        assert!(has_kernel);
+
+        let has_dtbs = block_on(fs.exists("/dtbs")).expect("resolve /dtbs");
+        assert!(has_dtbs);
+    }
+
     fn build_test_fat32_image() -> Vec<u8> {
         let mut image = vec![0u8; TEST_TOTAL_SECTORS * TEST_SECTOR_SIZE];
 
@@ -816,6 +851,20 @@ mod tests {
         slot[20..22].copy_from_slice(&((first_cluster >> 16) as u16).to_le_bytes());
         slot[26..28].copy_from_slice(&(first_cluster as u16).to_le_bytes());
         slot[28..32].copy_from_slice(&size.to_le_bytes());
+    }
+
+    fn inject_invalid_volume_label_root_entry(image: &mut [u8]) {
+        let root = cluster_mut(image, 2);
+        write_short_entry(&mut root[0..32], *b"pmOS_boot  ", FAT_ATTR_VOLUME_ID, 0, 0);
+        write_short_entry(&mut root[32..64], short_name("VMLINUZ", ""), 0x20, 3, 12);
+        write_short_entry(
+            &mut root[64..96],
+            short_name("DTBS", ""),
+            FAT_ATTR_DIRECTORY,
+            4,
+            0,
+        );
+        root[96] = 0x00;
     }
 
     fn short_name(base: &str, ext: &str) -> [u8; 11] {
