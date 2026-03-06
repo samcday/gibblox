@@ -67,4 +67,5 @@ tracing = { version = "0.1.41", optional = true }
 url = { workspace = true, optional = true }
 
 [dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
 serde_yaml = "0.9.34"

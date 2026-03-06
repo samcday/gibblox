@@ -57,7 +57,7 @@ pub async fn open_pipeline(
     maybe_wrap_tail_cache(reader, opts).await
 }
 
-fn open_pipeline_source<'a>(
+pub(crate) fn open_pipeline_source<'a>(
     source: &'a PipelineSource,
     opts: &'a OpenPipelineOptions,
 ) -> Pin<Box<dyn Future<Output = Result<DynBlockReader>> + 'a>> {
@@ -106,10 +106,16 @@ fn open_pipeline_source<'a>(
             }
             PipelineSource::AndroidSparseImg(source) => {
                 let upstream =
-                    open_pipeline_source(source.android_sparseimg.as_ref(), opts).await?;
-                let reader = AndroidSparseBlockReader::new(upstream)
-                    .await
-                    .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
+                    open_pipeline_source(source.android_sparseimg.source.as_ref(), opts).await?;
+                let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
+                    AndroidSparseBlockReader::new_with_index(upstream, index.clone().into())
+                        .await
+                        .map_err(|err| anyhow!("open android sparse reader from index: {err}"))?
+                } else {
+                    AndroidSparseBlockReader::new(upstream)
+                        .await
+                        .map_err(|err| anyhow!("open android sparse reader: {err}"))?
+                };
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::Mbr(source) => {

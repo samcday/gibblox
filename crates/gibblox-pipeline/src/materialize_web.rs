@@ -78,10 +78,20 @@ fn resolve_pipeline_source<'a>(
             }
             PipelineSource::AndroidSparseImg(source) => {
                 let upstream =
-                    resolve_pipeline_source(source.android_sparseimg.as_ref(), opts).await?;
-                let config = AndroidSparseBlockReaderConfig::default()
-                    .with_source_identity(source_identity(source.android_sparseimg.as_ref()));
-                let reader = AndroidSparseBlockReader::new_with_config(upstream, config).await?;
+                    resolve_pipeline_source(source.android_sparseimg.source.as_ref(), opts).await?;
+                let config = AndroidSparseBlockReaderConfig::default().with_source_identity(
+                    source_identity(source.android_sparseimg.source.as_ref()),
+                );
+                let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
+                    AndroidSparseBlockReader::new_with_index_and_config(
+                        upstream,
+                        index.clone().into(),
+                        config,
+                    )
+                    .await?
+                } else {
+                    AndroidSparseBlockReader::new_with_config(upstream, config).await?
+                };
                 let reader: Arc<dyn BlockReader> = Arc::new(reader);
                 Ok(reader)
             }

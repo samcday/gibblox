@@ -25,6 +25,37 @@ const CHUNK_TYPE_FILL: u16 = 0xCAC2;
 const CHUNK_TYPE_DONT_CARE: u16 = 0xCAC3;
 const CHUNK_TYPE_CRC32: u16 = 0xCAC4;
 
+pub const ANDROID_SPARSE_CHUNK_TYPE_RAW: u16 = CHUNK_TYPE_RAW;
+pub const ANDROID_SPARSE_CHUNK_TYPE_FILL: u16 = CHUNK_TYPE_FILL;
+pub const ANDROID_SPARSE_CHUNK_TYPE_DONT_CARE: u16 = CHUNK_TYPE_DONT_CARE;
+pub const ANDROID_SPARSE_CHUNK_TYPE_CRC32: u16 = CHUNK_TYPE_CRC32;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidSparseImageIndex {
+    pub file_hdr_sz: u16,
+    pub chunk_hdr_sz: u16,
+    pub blk_sz: u32,
+    pub total_blks: u32,
+    pub total_chunks: u32,
+    pub image_checksum: u32,
+    pub chunks: Vec<AndroidSparseChunkIndex>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidSparseChunkIndex {
+    pub chunk_index: u32,
+    pub chunk_type: u16,
+    pub chunk_sz: u32,
+    pub total_sz: u32,
+    pub chunk_offset: u64,
+    pub payload_offset: u64,
+    pub payload_size: u64,
+    pub output_start: Option<u64>,
+    pub output_end: Option<u64>,
+    pub fill_pattern: Option<[u8; 4]>,
+    pub crc32: Option<u32>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AndroidSparseBlockReaderConfig {
     pub source_identity: Option<String>,
@@ -58,11 +89,12 @@ pub struct AndroidSparseBlockReader<S> {
     source: S,
     source_block_size: usize,
     source_size_bytes: u64,
+    file_header_size: u16,
     block_size: u32,
     total_blocks: u64,
     expanded_size_bytes: u64,
     total_chunks: usize,
-    chunk_header_size: u64,
+    chunk_header_size: u16,
     declared_chunks: u32,
     image_checksum: u32,
     chunks: Mutex<SparseChunkState>,
@@ -71,6 +103,7 @@ pub struct AndroidSparseBlockReader<S> {
 
 struct SparseChunkState {
     chunks: Vec<SparseChunk>,
+    index_chunks: Vec<AndroidSparseChunkIndex>,
     next_chunk_index: usize,
     next_chunk_cursor: u64,
     output_cursor: u64,
@@ -130,7 +163,7 @@ where
                 )
             })?;
 
-        let chunk_header_size = u64::from(sparse_header.chunk_hdr_sz);
+        let chunk_header_size = sparse_header.chunk_hdr_sz;
         let chunk_cursor = u64::from(sparse_header.file_hdr_sz);
         if chunk_cursor > source_size_bytes {
             return Err(GibbloxError::with_message(
@@ -141,7 +174,7 @@ where
 
         let total_chunks_u64 = u64::from(sparse_header.total_chunks);
         let available_chunk_header_bytes = source_size_bytes - chunk_cursor;
-        let max_chunk_headers = available_chunk_header_bytes / chunk_header_size;
+        let max_chunk_headers = available_chunk_header_bytes / u64::from(chunk_header_size);
         if total_chunks_u64 > max_chunk_headers {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -157,6 +190,7 @@ where
         })?;
         let chunks = Mutex::new(SparseChunkState {
             chunks: Vec::new(),
+            index_chunks: Vec::new(),
             next_chunk_index: 0,
             next_chunk_cursor: chunk_cursor,
             output_cursor: 0,
@@ -182,6 +216,7 @@ where
             source,
             source_block_size,
             source_size_bytes,
+            file_header_size: sparse_header.file_hdr_sz,
             block_size: sparse_block_size,
             total_blocks,
             expanded_size_bytes,
@@ -189,6 +224,334 @@ where
             chunk_header_size,
             declared_chunks: sparse_header.total_chunks,
             image_checksum: sparse_header.image_checksum,
+            chunks,
+            config,
+        })
+    }
+
+    pub async fn new_with_index(source: S, index: AndroidSparseImageIndex) -> GibbloxResult<Self> {
+        Self::new_with_index_and_config(source, index, AndroidSparseBlockReaderConfig::default())
+            .await
+    }
+
+    pub async fn new_with_index_and_config(
+        source: S,
+        index: AndroidSparseImageIndex,
+        config: AndroidSparseBlockReaderConfig,
+    ) -> GibbloxResult<Self> {
+        let source_block_size_u32 = source.block_size();
+        if source_block_size_u32 == 0 || !source_block_size_u32.is_power_of_two() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "source block size must be non-zero power of two",
+            ));
+        }
+
+        let source_total_blocks = source.total_blocks().await?;
+        let source_size_bytes = source_total_blocks
+            .checked_mul(source_block_size_u32 as u64)
+            .ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source size overflow")
+            })?;
+        let source_block_size = source_block_size_u32 as usize;
+
+        validate_sparse_index_shape(&index)?;
+
+        let total_chunks = usize::try_from(index.total_chunks).map_err(|_| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "chunk count overflow")
+        })?;
+        if total_chunks != index.chunks.len() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!(
+                    "sparse index chunk count mismatch (header {}, entries {})",
+                    index.total_chunks,
+                    index.chunks.len()
+                ),
+            ));
+        }
+
+        let total_blocks = u64::from(index.total_blks);
+        let expanded_size_bytes =
+            total_blocks
+                .checked_mul(index.blk_sz as u64)
+                .ok_or_else(|| {
+                    GibbloxError::with_message(
+                        GibbloxErrorKind::OutOfRange,
+                        "sparse expanded image size overflow",
+                    )
+                })?;
+
+        let mut mapped_chunks = Vec::new();
+        let mut output_cursor = 0u64;
+        let mut next_chunk_cursor = u64::from(index.file_hdr_sz);
+        let chunk_header_size_u64 = u64::from(index.chunk_hdr_sz);
+
+        for (expected_pos, entry) in index.chunks.iter().enumerate() {
+            let expected_chunk_index = u32::try_from(expected_pos).map_err(|_| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "chunk index overflow")
+            })?;
+            if entry.chunk_index != expected_chunk_index {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!(
+                        "sparse index chunk position mismatch (entry {}, expected {})",
+                        entry.chunk_index, expected_chunk_index
+                    ),
+                ));
+            }
+            if entry.chunk_offset != next_chunk_cursor {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!(
+                        "sparse index chunk {} offset mismatch (entry {}, expected {})",
+                        entry.chunk_index, entry.chunk_offset, next_chunk_cursor
+                    ),
+                ));
+            }
+
+            let chunk_total_size = u64::from(entry.total_sz);
+            if chunk_total_size < chunk_header_size_u64 {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!(
+                        "sparse index chunk {} total size is smaller than chunk header size",
+                        entry.chunk_index
+                    ),
+                ));
+            }
+
+            let chunk_end = entry
+                .chunk_offset
+                .checked_add(chunk_total_size)
+                .ok_or_else(|| {
+                    GibbloxError::with_message(
+                        GibbloxErrorKind::OutOfRange,
+                        format!("sparse index chunk {} range overflow", entry.chunk_index),
+                    )
+                })?;
+            if chunk_end > source_size_bytes {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    format!(
+                        "sparse index chunk {} exceeds source size",
+                        entry.chunk_index
+                    ),
+                ));
+            }
+
+            let expected_payload_offset = entry
+                .chunk_offset
+                .checked_add(chunk_header_size_u64)
+                .ok_or_else(|| {
+                    GibbloxError::with_message(
+                        GibbloxErrorKind::OutOfRange,
+                        format!(
+                            "sparse index chunk {} payload offset overflow",
+                            entry.chunk_index
+                        ),
+                    )
+                })?;
+            if entry.payload_offset != expected_payload_offset {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!(
+                        "sparse index chunk {} payload offset mismatch (entry {}, expected {})",
+                        entry.chunk_index, entry.payload_offset, expected_payload_offset
+                    ),
+                ));
+            }
+
+            let expected_payload_size = chunk_total_size - chunk_header_size_u64;
+            if entry.payload_size != expected_payload_size {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!(
+                        "sparse index chunk {} payload size mismatch (entry {}, expected {})",
+                        entry.chunk_index, entry.payload_size, expected_payload_size
+                    ),
+                ));
+            }
+
+            let chunk_output_bytes = u64::from(entry.chunk_sz)
+                .checked_mul(index.blk_sz as u64)
+                .ok_or_else(|| {
+                    GibbloxError::with_message(
+                        GibbloxErrorKind::OutOfRange,
+                        format!(
+                            "sparse index chunk {} output size overflow",
+                            entry.chunk_index
+                        ),
+                    )
+                })?;
+
+            match entry.chunk_type {
+                CHUNK_TYPE_RAW => {
+                    if expected_payload_size != chunk_output_bytes {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} RAW payload mismatch",
+                                entry.chunk_index
+                            ),
+                        ));
+                    }
+                    let (output_start, output_end) =
+                        validate_index_output_span(entry, output_cursor, chunk_output_bytes)?;
+                    output_cursor = output_end;
+                    mapped_chunks.push(SparseChunk {
+                        output_start,
+                        output_end,
+                        kind: SparseChunkKind::Raw {
+                            source_offset: entry.payload_offset,
+                        },
+                    });
+                }
+                CHUNK_TYPE_FILL => {
+                    if expected_payload_size != 4 {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} FILL payload size mismatch",
+                                entry.chunk_index
+                            ),
+                        ));
+                    }
+                    let pattern = entry.fill_pattern.ok_or_else(|| {
+                        GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} FILL pattern is missing",
+                                entry.chunk_index
+                            ),
+                        )
+                    })?;
+                    let (output_start, output_end) =
+                        validate_index_output_span(entry, output_cursor, chunk_output_bytes)?;
+                    output_cursor = output_end;
+                    mapped_chunks.push(SparseChunk {
+                        output_start,
+                        output_end,
+                        kind: SparseChunkKind::Fill { pattern },
+                    });
+                }
+                CHUNK_TYPE_DONT_CARE => {
+                    if expected_payload_size != 0 {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} DONT_CARE payload must be empty",
+                                entry.chunk_index
+                            ),
+                        ));
+                    }
+                    let (output_start, output_end) =
+                        validate_index_output_span(entry, output_cursor, chunk_output_bytes)?;
+                    output_cursor = output_end;
+                    mapped_chunks.push(SparseChunk {
+                        output_start,
+                        output_end,
+                        kind: SparseChunkKind::DontCare,
+                    });
+                }
+                CHUNK_TYPE_CRC32 => {
+                    if entry.chunk_sz != 0 {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} CRC32 chunk_sz must be zero",
+                                entry.chunk_index
+                            ),
+                        ));
+                    }
+                    if expected_payload_size != 4 {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} CRC32 payload size mismatch",
+                                entry.chunk_index
+                            ),
+                        ));
+                    }
+                    if entry.output_start.is_some() || entry.output_end.is_some() {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} CRC32 must not map output",
+                                entry.chunk_index
+                            ),
+                        ));
+                    }
+                    if entry.crc32.is_none() {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            format!(
+                                "sparse index chunk {} CRC32 payload is missing",
+                                entry.chunk_index
+                            ),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::Unsupported,
+                        format!(
+                            "unsupported sparse chunk type 0x{other:04X} in index at chunk {}",
+                            entry.chunk_index
+                        ),
+                    ));
+                }
+            }
+
+            next_chunk_cursor = chunk_end;
+        }
+
+        if output_cursor != expanded_size_bytes {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!(
+                    "sparse index output size mismatch (mapped {}, expected {})",
+                    output_cursor, expanded_size_bytes
+                ),
+            ));
+        }
+
+        let chunks = Mutex::new(SparseChunkState {
+            chunks: mapped_chunks,
+            index_chunks: index.chunks.clone(),
+            next_chunk_index: total_chunks,
+            next_chunk_cursor,
+            output_cursor,
+        });
+
+        let source_identity = config
+            .source_identity
+            .clone()
+            .unwrap_or_else(|| gibblox_core::block_identity_string(&source));
+        let config = config.with_source_identity(source_identity);
+
+        debug!(
+            source_block_size = source_block_size_u32,
+            source_total_blocks,
+            sparse_block_size = index.blk_sz,
+            total_blocks,
+            declared_chunks = index.total_chunks,
+            mapped_chunks = total_chunks,
+            "android sparse reader initialized from index"
+        );
+
+        Ok(Self {
+            source,
+            source_block_size,
+            source_size_bytes,
+            file_header_size: index.file_hdr_sz,
+            block_size: index.blk_sz,
+            total_blocks,
+            expanded_size_bytes,
+            total_chunks,
+            chunk_header_size: index.chunk_hdr_sz,
+            declared_chunks: index.total_chunks,
+            image_checksum: index.image_checksum,
             chunks,
             config,
         })
@@ -208,6 +571,36 @@ where
 
     pub fn config(&self) -> &AndroidSparseBlockReaderConfig {
         &self.config
+    }
+
+    pub async fn materialize_index(&self) -> GibbloxResult<AndroidSparseImageIndex> {
+        self.parse_all_chunks(ReadContext::FOREGROUND).await?;
+        let state = self.chunks.lock().await;
+        Ok(AndroidSparseImageIndex {
+            file_hdr_sz: self.file_header_size,
+            chunk_hdr_sz: self.chunk_header_size,
+            blk_sz: self.block_size,
+            total_blks: u32::try_from(self.total_blocks).map_err(|_| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "sparse total blocks exceed u32",
+                )
+            })?,
+            total_chunks: self.declared_chunks,
+            image_checksum: self.image_checksum,
+            chunks: state.index_chunks.clone(),
+        })
+    }
+
+    async fn parse_all_chunks(&self, ctx: ReadContext) -> GibbloxResult<()> {
+        loop {
+            let state = self.chunks.lock().await;
+            if state.next_chunk_index >= self.total_chunks {
+                return Ok(());
+            }
+            drop(state);
+            self.parse_next_chunk(ctx).await?;
+        }
     }
 
     async fn ensure_chunks_cover_range(
@@ -263,7 +656,8 @@ where
         let chunk_header = SparseChunkHeader::parse(&chunk_header_raw);
 
         let chunk_total_size = u64::from(chunk_header.total_sz);
-        if chunk_total_size < self.chunk_header_size {
+        let chunk_header_size_u64 = u64::from(self.chunk_header_size);
+        if chunk_total_size < chunk_header_size_u64 {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 format!("chunk {chunk_index} total size is smaller than chunk header size"),
@@ -283,15 +677,16 @@ where
             ));
         }
 
-        let chunk_payload_offset = chunk_cursor
-            .checked_add(self.chunk_header_size)
-            .ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    format!("chunk {chunk_index} payload offset overflow"),
-                )
-            })?;
-        let chunk_payload_size = chunk_total_size - self.chunk_header_size;
+        let chunk_payload_offset =
+            chunk_cursor
+                .checked_add(chunk_header_size_u64)
+                .ok_or_else(|| {
+                    GibbloxError::with_message(
+                        GibbloxErrorKind::OutOfRange,
+                        format!("chunk {chunk_index} payload offset overflow"),
+                    )
+                })?;
+        let chunk_payload_size = chunk_total_size - chunk_header_size_u64;
         let chunk_output_bytes = u64::from(chunk_header.chunk_sz)
             .checked_mul(self.block_size as u64)
             .ok_or_else(|| {
@@ -300,6 +695,23 @@ where
                     format!("chunk {chunk_index} output size overflow"),
                 )
             })?;
+
+        let chunk_index_u32 = u32::try_from(chunk_index).map_err(|_| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "chunk index overflow")
+        })?;
+        let mut index_chunk = AndroidSparseChunkIndex {
+            chunk_index: chunk_index_u32,
+            chunk_type: chunk_header.chunk_type,
+            chunk_sz: chunk_header.chunk_sz,
+            total_sz: chunk_header.total_sz,
+            chunk_offset: chunk_cursor,
+            payload_offset: chunk_payload_offset,
+            payload_size: chunk_payload_size,
+            output_start: None,
+            output_end: None,
+            fill_pattern: None,
+            crc32: None,
+        };
 
         let mapped_chunk = match chunk_header.chunk_type {
             CHUNK_TYPE_RAW => {
@@ -317,12 +729,16 @@ where
                     self.expanded_size_bytes,
                     chunk_index,
                 )?
-                .map(|(output_start, output_end)| SparseChunk {
-                    output_start,
-                    output_end,
-                    kind: SparseChunkKind::Raw {
-                        source_offset: chunk_payload_offset,
-                    },
+                .map(|(output_start, output_end)| {
+                    index_chunk.output_start = Some(output_start);
+                    index_chunk.output_end = Some(output_end);
+                    SparseChunk {
+                        output_start,
+                        output_end,
+                        kind: SparseChunkKind::Raw {
+                            source_offset: chunk_payload_offset,
+                        },
+                    }
                 })
             }
             CHUNK_TYPE_FILL => {
@@ -345,6 +761,7 @@ where
                     ctx,
                 )
                 .await?;
+                index_chunk.fill_pattern = Some(pattern);
 
                 claim_output_span(
                     &mut state.output_cursor,
@@ -352,10 +769,14 @@ where
                     self.expanded_size_bytes,
                     chunk_index,
                 )?
-                .map(|(output_start, output_end)| SparseChunk {
-                    output_start,
-                    output_end,
-                    kind: SparseChunkKind::Fill { pattern },
+                .map(|(output_start, output_end)| {
+                    index_chunk.output_start = Some(output_start);
+                    index_chunk.output_end = Some(output_end);
+                    SparseChunk {
+                        output_start,
+                        output_end,
+                        kind: SparseChunkKind::Fill { pattern },
+                    }
                 })
             }
             CHUNK_TYPE_DONT_CARE => {
@@ -374,10 +795,14 @@ where
                     self.expanded_size_bytes,
                     chunk_index,
                 )?
-                .map(|(output_start, output_end)| SparseChunk {
-                    output_start,
-                    output_end,
-                    kind: SparseChunkKind::DontCare,
+                .map(|(output_start, output_end)| {
+                    index_chunk.output_start = Some(output_start);
+                    index_chunk.output_end = Some(output_end);
+                    SparseChunk {
+                        output_start,
+                        output_end,
+                        kind: SparseChunkKind::DontCare,
+                    }
                 })
             }
             CHUNK_TYPE_CRC32 => {
@@ -406,6 +831,7 @@ where
                     ctx,
                 )
                 .await?;
+                index_chunk.crc32 = Some(u32::from_le_bytes(crc));
                 None
             }
             other => {
@@ -419,6 +845,7 @@ where
         if let Some(chunk) = mapped_chunk {
             state.chunks.push(chunk);
         }
+        state.index_chunks.push(index_chunk);
         state.next_chunk_index = state.next_chunk_index.checked_add(1).ok_or_else(|| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "chunk index overflow")
         })?;
@@ -725,6 +1152,76 @@ fn validate_sparse_header(header: &SparseHeader) -> GibbloxResult<()> {
     Ok(())
 }
 
+fn validate_sparse_index_shape(index: &AndroidSparseImageIndex) -> GibbloxResult<()> {
+    let header = SparseHeader {
+        magic: SPARSE_HEADER_MAGIC,
+        major_version: SPARSE_MAJOR_VERSION,
+        file_hdr_sz: index.file_hdr_sz,
+        chunk_hdr_sz: index.chunk_hdr_sz,
+        blk_sz: index.blk_sz,
+        total_blks: index.total_blks,
+        total_chunks: index.total_chunks,
+        image_checksum: index.image_checksum,
+    };
+    validate_sparse_header(&header)
+}
+
+fn validate_index_output_span(
+    entry: &AndroidSparseChunkIndex,
+    expected_start: u64,
+    expected_len: u64,
+) -> GibbloxResult<(u64, u64)> {
+    let output_start = entry.output_start.ok_or_else(|| {
+        GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            format!(
+                "sparse index chunk {} missing output_start",
+                entry.chunk_index
+            ),
+        )
+    })?;
+    let output_end = entry.output_end.ok_or_else(|| {
+        GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            format!(
+                "sparse index chunk {} missing output_end",
+                entry.chunk_index
+            ),
+        )
+    })?;
+
+    if output_start != expected_start {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            format!(
+                "sparse index chunk {} output_start mismatch (entry {}, expected {})",
+                entry.chunk_index, output_start, expected_start
+            ),
+        ));
+    }
+
+    let expected_end = expected_start.checked_add(expected_len).ok_or_else(|| {
+        GibbloxError::with_message(
+            GibbloxErrorKind::OutOfRange,
+            format!(
+                "sparse index chunk {} output range overflow",
+                entry.chunk_index
+            ),
+        )
+    })?;
+    if output_end != expected_end {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            format!(
+                "sparse index chunk {} output_end mismatch (entry {}, expected {})",
+                entry.chunk_index, output_end, expected_end
+            ),
+        ));
+    }
+
+    Ok((output_start, output_end))
+}
+
 fn claim_output_span(
     cursor: &mut u64,
     bytes: u64,
@@ -1018,6 +1515,78 @@ mod tests {
             "expected a few reads for first chunk only, got {}",
             source.reads()
         );
+    }
+
+    #[test]
+    fn materializes_index_and_opens_from_index_without_header_walk() {
+        let mut image = sparse_header(8, 2, 2, 28, 12);
+        append_raw_chunk(&mut image, 1, b"ABCDEFGH", 12);
+        append_dont_care_chunk(&mut image, 1, 12);
+
+        let source_for_index = Arc::new(FakeReader {
+            block_size: 16,
+            data: image.clone(),
+            reads: AtomicU64::new(0),
+        });
+        let reader_for_index =
+            block_on(AndroidSparseBlockReader::new(Arc::clone(&source_for_index)))
+                .expect("open sparse reader for indexing");
+        let index = block_on(reader_for_index.materialize_index()).expect("materialize index");
+        assert_eq!(index.total_chunks, 2);
+
+        let source_indexed = Arc::new(FakeReader {
+            block_size: 16,
+            data: image,
+            reads: AtomicU64::new(0),
+        });
+        let reader_indexed = block_on(AndroidSparseBlockReader::new_with_index(
+            Arc::clone(&source_indexed),
+            index,
+        ))
+        .expect("open sparse reader from precomputed index");
+        assert_eq!(
+            source_indexed.reads(),
+            0,
+            "open from index should not read source bytes"
+        );
+
+        let mut second = [0u8; 8];
+        let read = block_on(reader_indexed.read_blocks(1, &mut second, ReadContext::FOREGROUND))
+            .expect("read indexed DONT_CARE block");
+        assert_eq!(read, second.len());
+        assert_eq!(second, [0u8; 8]);
+        assert_eq!(
+            source_indexed.reads(),
+            0,
+            "indexed DONT_CARE read should not touch source bytes"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_precomputed_index() {
+        let mut image = sparse_header(8, 1, 1, 28, 12);
+        append_raw_chunk(&mut image, 1, b"ABCDEFGH", 12);
+
+        let source = Arc::new(FakeReader {
+            block_size: 16,
+            data: image.clone(),
+            reads: AtomicU64::new(0),
+        });
+        let reader = block_on(AndroidSparseBlockReader::new(Arc::clone(&source)))
+            .expect("open sparse reader");
+        let mut index = block_on(reader.materialize_index()).expect("materialize index");
+        index.chunks[0].chunk_offset = 29;
+
+        let source_bad = Arc::new(FakeReader {
+            block_size: 16,
+            data: image,
+            reads: AtomicU64::new(0),
+        });
+        let err = match block_on(AndroidSparseBlockReader::new_with_index(source_bad, index)) {
+            Ok(_) => panic!("invalid precomputed index should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
     #[test]
