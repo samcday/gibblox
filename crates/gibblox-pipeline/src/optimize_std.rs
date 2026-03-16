@@ -1,10 +1,13 @@
 use core::{future::Future, pin::Pin};
+use std::collections::HashMap;
 
 use anyhow::{Context, Result, anyhow};
 use gibblox_android_sparse::AndroidSparseBlockReader;
-use tracing::info;
+use tracing::{debug, info};
 
-use crate::{OpenPipelineOptions, PipelineSource};
+use crate::{
+    OpenPipelineOptions, PipelineAndroidSparseIndex, PipelineSource, pipeline_identity_string,
+};
 
 #[derive(Clone, Debug)]
 pub struct OptimizePipelineOptions {
@@ -29,35 +32,96 @@ pub struct OptimizePipelineReport {
     pub android_sparse_indexes_skipped: usize,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct OptimizePipelineSession {
+    android_sparse_index_cache: HashMap<String, PipelineAndroidSparseIndex>,
+}
+
+impl OptimizePipelineSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 pub async fn optimize_pipeline(
     source: &mut PipelineSource,
     opts: &OptimizePipelineOptions,
 ) -> Result<OptimizePipelineReport> {
+    let mut session = OptimizePipelineSession::new();
+    optimize_pipeline_with_session(source, opts, &mut session).await
+}
+
+pub async fn optimize_pipeline_with_session(
+    source: &mut PipelineSource,
+    opts: &OptimizePipelineOptions,
+    session: &mut OptimizePipelineSession,
+) -> Result<OptimizePipelineReport> {
     let mut report = OptimizePipelineReport::default();
-    optimize_pipeline_source(source, opts, &mut report).await?;
+    optimize_pipeline_source(source, opts, session, &mut report).await?;
     Ok(report)
 }
 
 fn optimize_pipeline_source<'a>(
     source: &'a mut PipelineSource,
     opts: &'a OptimizePipelineOptions,
+    session: &'a mut OptimizePipelineSession,
     report: &'a mut OptimizePipelineReport,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
         match source {
             PipelineSource::Xz(stage) => {
-                optimize_pipeline_source(stage.xz.as_mut(), opts, report).await
+                optimize_pipeline_source(stage.xz.as_mut(), opts, session, report).await
             }
             PipelineSource::AndroidSparseImg(stage) => {
-                optimize_pipeline_source(stage.android_sparseimg.source.as_mut(), opts, report)
-                    .await?;
+                optimize_pipeline_source(
+                    stage.android_sparseimg.source.as_mut(),
+                    opts,
+                    session,
+                    report,
+                )
+                .await?;
 
                 report.android_sparse_stages_visited =
                     report.android_sparse_stages_visited.saturating_add(1);
                 if stage.android_sparseimg.index.is_some() && !opts.force {
                     report.android_sparse_indexes_skipped =
                         report.android_sparse_indexes_skipped.saturating_add(1);
+                    debug!(
+                        force = opts.force,
+                        "pipeline optimizer skipped android sparse stage with existing index"
+                    );
                     return Ok(());
+                }
+
+                let cache_key = pipeline_identity_string(stage.android_sparseimg.source.as_ref());
+                if !opts.force {
+                    if let Some(index) = session.android_sparse_index_cache.get(&cache_key) {
+                        let had_index = stage.android_sparseimg.index.is_some();
+                        stage.android_sparseimg.index = Some(index.clone());
+                        if had_index {
+                            report.android_sparse_indexes_updated =
+                                report.android_sparse_indexes_updated.saturating_add(1);
+                        } else {
+                            report.android_sparse_indexes_added =
+                                report.android_sparse_indexes_added.saturating_add(1);
+                        }
+
+                        debug!(
+                            cache_key = cache_key.as_str(),
+                            had_index, "pipeline optimizer cache hit for android sparse index"
+                        );
+                        return Ok(());
+                    }
+
+                    debug!(
+                        cache_key = cache_key.as_str(),
+                        "pipeline optimizer cache miss for android sparse index"
+                    );
+                } else {
+                    debug!(
+                        cache_key = cache_key.as_str(),
+                        "pipeline optimizer bypassed android sparse cache due to force"
+                    );
                 }
 
                 let open_opts = OpenPipelineOptions {
@@ -80,7 +144,11 @@ fn optimize_pipeline_source<'a>(
                     .map_err(|err| anyhow!("materialize android sparse index: {err}"))?;
 
                 let had_index = stage.android_sparseimg.index.is_some();
-                stage.android_sparseimg.index = Some(index.into());
+                let index: PipelineAndroidSparseIndex = index.into();
+                stage.android_sparseimg.index = Some(index.clone());
+                session
+                    .android_sparse_index_cache
+                    .insert(cache_key.clone(), index);
                 if had_index {
                     report.android_sparse_indexes_updated =
                         report.android_sparse_indexes_updated.saturating_add(1);
@@ -94,14 +162,18 @@ fn optimize_pipeline_source<'a>(
                     force = opts.force,
                     "pipeline optimizer materialized android sparse index"
                 );
+                debug!(
+                    cache_key = cache_key.as_str(),
+                    "pipeline optimizer cached android sparse index"
+                );
 
                 Ok(())
             }
             PipelineSource::Mbr(stage) => {
-                optimize_pipeline_source(stage.mbr.source.as_mut(), opts, report).await
+                optimize_pipeline_source(stage.mbr.source.as_mut(), opts, session, report).await
             }
             PipelineSource::Gpt(stage) => {
-                optimize_pipeline_source(stage.gpt.source.as_mut(), opts, report).await
+                optimize_pipeline_source(stage.gpt.source.as_mut(), opts, session, report).await
             }
             PipelineSource::Casync(_) | PipelineSource::Http(_) | PipelineSource::File(_) => Ok(()),
         }
@@ -110,7 +182,10 @@ fn optimize_pipeline_source<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{OptimizePipelineOptions, optimize_pipeline};
+    use super::{
+        OptimizePipelineOptions, OptimizePipelineSession, optimize_pipeline,
+        optimize_pipeline_with_session,
+    };
     use crate::{
         PipelineSource, PipelineSourceAndroidSparseImg, PipelineSourceAndroidSparseImgSource,
         PipelineSourceFileSource,
@@ -196,6 +271,115 @@ mod tests {
         assert_eq!(second.android_sparse_indexes_skipped, 1);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn optimize_reuses_cached_index_across_pipelines_with_shared_session() {
+        let path = write_temp_sparse_image();
+        let source_path = path.to_string_lossy().to_string();
+
+        let mut first_source = sparse_file_source(source_path.clone());
+        let mut session = OptimizePipelineSession::new();
+        let first = block_on(optimize_pipeline_with_session(
+            &mut first_source,
+            &OptimizePipelineOptions::default(),
+            &mut session,
+        ))
+        .expect("first optimize with shared session");
+        assert_eq!(first.android_sparse_indexes_added, 1);
+
+        fs::remove_file(&path).expect("remove source after first optimize");
+
+        let mut second_source = sparse_file_source(source_path);
+        let second = block_on(optimize_pipeline_with_session(
+            &mut second_source,
+            &OptimizePipelineOptions::default(),
+            &mut session,
+        ))
+        .expect("second optimize should reuse cached index");
+        assert_eq!(second.android_sparse_stages_visited, 1);
+        assert_eq!(second.android_sparse_indexes_added, 1);
+        assert_eq!(second.android_sparse_indexes_updated, 0);
+        assert_eq!(second.android_sparse_indexes_skipped, 0);
+
+        let PipelineSource::AndroidSparseImg(source) = second_source else {
+            panic!("expected android_sparseimg source")
+        };
+        assert!(source.android_sparseimg.index.is_some());
+    }
+
+    #[test]
+    fn optimize_force_bypasses_cached_index_in_shared_session() {
+        let path = write_temp_sparse_image();
+        let source_path = path.to_string_lossy().to_string();
+
+        let mut first_source = sparse_file_source(source_path.clone());
+        let mut session = OptimizePipelineSession::new();
+        block_on(optimize_pipeline_with_session(
+            &mut first_source,
+            &OptimizePipelineOptions::default(),
+            &mut session,
+        ))
+        .expect("seed session cache");
+
+        fs::remove_file(&path).expect("remove source before force optimize");
+
+        let mut second_source = sparse_file_source(source_path);
+        let err = block_on(optimize_pipeline_with_session(
+            &mut second_source,
+            &OptimizePipelineOptions {
+                force: true,
+                ..OptimizePipelineOptions::default()
+            },
+            &mut session,
+        ))
+        .expect_err("force optimize should bypass cache and fail on missing source");
+        let err_text = format!("{err:#}");
+        assert!(
+            err_text.contains("open android sparse upstream source"),
+            "unexpected error: {err_text}"
+        );
+    }
+
+    #[test]
+    fn optimize_does_not_reuse_cached_index_for_distinct_fragments() {
+        let path = write_temp_sparse_image();
+        let mut session = OptimizePipelineSession::new();
+
+        let mut first_source = sparse_file_source(path.to_string_lossy().to_string());
+        block_on(optimize_pipeline_with_session(
+            &mut first_source,
+            &OptimizePipelineOptions::default(),
+            &mut session,
+        ))
+        .expect("seed session cache");
+
+        let _ = fs::remove_file(path);
+
+        let mut distinct_source =
+            sparse_file_source(String::from("/nonexistent/distinct-image.simg"));
+        let err = block_on(optimize_pipeline_with_session(
+            &mut distinct_source,
+            &OptimizePipelineOptions::default(),
+            &mut session,
+        ))
+        .expect_err("distinct fragment should not reuse cached index");
+        let err_text = format!("{err:#}");
+        assert!(
+            err_text.contains("open android sparse upstream source"),
+            "unexpected error: {err_text}"
+        );
+    }
+
+    fn sparse_file_source(path: String) -> PipelineSource {
+        PipelineSource::AndroidSparseImg(PipelineSourceAndroidSparseImgSource {
+            android_sparseimg: PipelineSourceAndroidSparseImg {
+                index: None,
+                source: Box::new(PipelineSource::File(PipelineSourceFileSource {
+                    file: path,
+                })),
+            },
+        })
     }
 
     fn write_temp_sparse_image() -> PathBuf {
