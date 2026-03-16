@@ -33,7 +33,10 @@ mod materialize_web;
 pub use materialize_std::{OpenPipelineOptions, open_pipeline};
 
 #[cfg(feature = "std")]
-pub use optimize_std::{OptimizePipelineOptions, OptimizePipelineReport, optimize_pipeline};
+pub use optimize_std::{
+    OptimizePipelineOptions, OptimizePipelineReport, OptimizePipelineSession, optimize_pipeline,
+    optimize_pipeline_with_session,
+};
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use materialize_web::{
@@ -754,7 +757,7 @@ impl From<PipelineAndroidSparseChunkIndex> for gibblox_android_sparse::AndroidSp
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, string::String, vec::Vec};
+    use alloc::{boxed::Box, string::String, vec, vec::Vec};
 
     use super::{
         MAX_PIPELINE_DEPTH, PipelineAndroidSparseChunkIndex, PipelineAndroidSparseIndex,
