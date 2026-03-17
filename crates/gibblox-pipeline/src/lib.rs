@@ -15,6 +15,16 @@ use crate::bin::{
     PIPELINE_BIN_FORMAT_VERSION, PIPELINE_BIN_HEADER_LEN, PIPELINE_BIN_MAGIC, PipelineSourceBin,
 };
 
+pub use gibblox_schema::bin::{
+    PIPELINE_HINTS_BIN_FORMAT_VERSION, PIPELINE_HINTS_BIN_HEADER_LEN, PIPELINE_HINTS_BIN_MAGIC,
+};
+pub use gibblox_schema::{
+    PipelineAndroidSparseChunkIndexHint, PipelineAndroidSparseIndexHint, PipelineHint,
+    PipelineHintEntry, PipelineHints, PipelineHintsCodecError, PipelineHintsValidationError,
+    decode_pipeline_hints, decode_pipeline_hints_prefix, encode_pipeline_hints,
+    pipeline_hints_bin_header_version, validate_pipeline_hints,
+};
+
 pub mod bin;
 
 #[cfg(any(feature = "std", all(feature = "web", target_arch = "wasm32")))]
@@ -74,6 +84,78 @@ impl std::error::Error for PipelineCodecError {}
 impl From<postcard::Error> for PipelineCodecError {
     fn from(err: postcard::Error) -> Self {
         Self::Decode(err)
+    }
+}
+
+impl From<PipelineAndroidSparseIndexHint> for PipelineAndroidSparseIndex {
+    fn from(index: PipelineAndroidSparseIndexHint) -> Self {
+        Self {
+            file_hdr_sz: index.file_hdr_sz,
+            chunk_hdr_sz: index.chunk_hdr_sz,
+            blk_sz: index.blk_sz,
+            total_blks: index.total_blks,
+            total_chunks: index.total_chunks,
+            image_checksum: index.image_checksum,
+            chunks: index
+                .chunks
+                .into_iter()
+                .map(PipelineAndroidSparseChunkIndex::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<PipelineAndroidSparseChunkIndexHint> for PipelineAndroidSparseChunkIndex {
+    fn from(chunk: PipelineAndroidSparseChunkIndexHint) -> Self {
+        Self {
+            chunk_index: chunk.chunk_index,
+            chunk_type: chunk.chunk_type,
+            chunk_sz: chunk.chunk_sz,
+            total_sz: chunk.total_sz,
+            chunk_offset: chunk.chunk_offset,
+            payload_offset: chunk.payload_offset,
+            payload_size: chunk.payload_size,
+            output_start: chunk.output_start,
+            output_end: chunk.output_end,
+            fill_pattern: chunk.fill_pattern,
+            crc32: chunk.crc32,
+        }
+    }
+}
+
+impl From<PipelineAndroidSparseIndex> for PipelineAndroidSparseIndexHint {
+    fn from(index: PipelineAndroidSparseIndex) -> Self {
+        Self {
+            file_hdr_sz: index.file_hdr_sz,
+            chunk_hdr_sz: index.chunk_hdr_sz,
+            blk_sz: index.blk_sz,
+            total_blks: index.total_blks,
+            total_chunks: index.total_chunks,
+            image_checksum: index.image_checksum,
+            chunks: index
+                .chunks
+                .into_iter()
+                .map(PipelineAndroidSparseChunkIndexHint::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<PipelineAndroidSparseChunkIndex> for PipelineAndroidSparseChunkIndexHint {
+    fn from(chunk: PipelineAndroidSparseChunkIndex) -> Self {
+        Self {
+            chunk_index: chunk.chunk_index,
+            chunk_type: chunk.chunk_type,
+            chunk_sz: chunk.chunk_sz,
+            total_sz: chunk.total_sz,
+            chunk_offset: chunk.chunk_offset,
+            payload_offset: chunk.payload_offset,
+            payload_size: chunk.payload_size,
+            output_start: chunk.output_start,
+            output_end: chunk.output_end,
+            fill_pattern: chunk.fill_pattern,
+            crc32: chunk.crc32,
+        }
     }
 }
 
