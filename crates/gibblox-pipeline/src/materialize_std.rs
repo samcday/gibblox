@@ -107,15 +107,9 @@ pub(crate) fn open_pipeline_source<'a>(
             PipelineSource::AndroidSparseImg(source) => {
                 let upstream =
                     open_pipeline_source(source.android_sparseimg.source.as_ref(), opts).await?;
-                let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
-                    AndroidSparseBlockReader::new_with_index(upstream, index.clone().into())
-                        .await
-                        .map_err(|err| anyhow!("open android sparse reader from index: {err}"))?
-                } else {
-                    AndroidSparseBlockReader::new(upstream)
-                        .await
-                        .map_err(|err| anyhow!("open android sparse reader: {err}"))?
-                };
+                let reader = AndroidSparseBlockReader::new(upstream)
+                    .await
+                    .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::Mbr(source) => {

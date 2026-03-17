@@ -82,16 +82,7 @@ fn resolve_pipeline_source<'a>(
                 let config = AndroidSparseBlockReaderConfig::default().with_source_identity(
                     source_identity(source.android_sparseimg.source.as_ref()),
                 );
-                let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
-                    AndroidSparseBlockReader::new_with_index_and_config(
-                        upstream,
-                        index.clone().into(),
-                        config,
-                    )
-                    .await?
-                } else {
-                    AndroidSparseBlockReader::new_with_config(upstream, config).await?
-                };
+                let reader = AndroidSparseBlockReader::new_with_config(upstream, config).await?;
                 let reader: Arc<dyn BlockReader> = Arc::new(reader);
                 Ok(reader)
             }
