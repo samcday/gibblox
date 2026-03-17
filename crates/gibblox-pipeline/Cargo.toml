@@ -49,6 +49,7 @@ web = [
 
 [dependencies]
 anyhow = { version = "1.0.95", optional = true }
+gibblox-schema = { workspace = true }
 gibblox-android-sparse = { workspace = true, features = ["std"], optional = true }
 gibblox-cache = { workspace = true, optional = true }
 gibblox-cache-store-std = { workspace = true, optional = true }

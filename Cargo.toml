@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "cli",
     "examples/pipeline-pump-web",
+    "crates/gibblox-schema",
     "crates/gobblytes-core",
     "crates/gobblytes-erofs",
     "crates/gobblytes-fat",
@@ -40,6 +41,7 @@ missing_const_for_fn = "allow"
 
 [workspace.dependencies]
 gibblox-cli = { version = "0.0.1-rc.12", path = "cli" }
+gibblox-schema = { version = "0.0.1-rc.12", path = "crates/gibblox-schema" }
 gobblytes-core = { version = "0.0.1-rc.12", path = "crates/gobblytes-core" }
 gobblytes-erofs = { version = "0.0.1-rc.12", path = "crates/gobblytes-erofs" }
 gobblytes-fat = { version = "0.0.1-rc.12", path = "crates/gobblytes-fat" }

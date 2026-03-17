@@ -30,6 +30,9 @@ extract artifacts from it. smoo just wants to serve it as a block device.
 - Prefer async-first implementations; justify any blocking path.
 - Add `tracing` for operationally relevant new behavior.
 - Keep diffs focused and reviewable.
+- During active v0 schema work (for example `PipelineHints` v0), prefer clean
+  breaking changes over compatibility shims. Avoid migration aliases and legacy
+  decode branches until the format is declared stable.
 
 ## Validation
 - Run targeted checks for touched crates during development.
