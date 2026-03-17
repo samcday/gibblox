@@ -33,20 +33,11 @@ mod materialize_common;
 #[cfg(feature = "std")]
 mod materialize_std;
 
-#[cfg(feature = "std")]
-mod optimize_std;
-
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod materialize_web;
 
 #[cfg(feature = "std")]
 pub use materialize_std::{OpenPipelineOptions, open_pipeline};
-
-#[cfg(feature = "std")]
-pub use optimize_std::{
-    OptimizePipelineOptions, OptimizePipelineReport, OptimizePipelineSession, optimize_pipeline,
-    optimize_pipeline_with_session,
-};
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use materialize_web::{
@@ -84,78 +75,6 @@ impl std::error::Error for PipelineCodecError {}
 impl From<postcard::Error> for PipelineCodecError {
     fn from(err: postcard::Error) -> Self {
         Self::Decode(err)
-    }
-}
-
-impl From<PipelineAndroidSparseIndexHint> for PipelineAndroidSparseIndex {
-    fn from(index: PipelineAndroidSparseIndexHint) -> Self {
-        Self {
-            file_hdr_sz: index.file_hdr_sz,
-            chunk_hdr_sz: index.chunk_hdr_sz,
-            blk_sz: index.blk_sz,
-            total_blks: index.total_blks,
-            total_chunks: index.total_chunks,
-            image_checksum: index.image_checksum,
-            chunks: index
-                .chunks
-                .into_iter()
-                .map(PipelineAndroidSparseChunkIndex::from)
-                .collect(),
-        }
-    }
-}
-
-impl From<PipelineAndroidSparseChunkIndexHint> for PipelineAndroidSparseChunkIndex {
-    fn from(chunk: PipelineAndroidSparseChunkIndexHint) -> Self {
-        Self {
-            chunk_index: chunk.chunk_index,
-            chunk_type: chunk.chunk_type,
-            chunk_sz: chunk.chunk_sz,
-            total_sz: chunk.total_sz,
-            chunk_offset: chunk.chunk_offset,
-            payload_offset: chunk.payload_offset,
-            payload_size: chunk.payload_size,
-            output_start: chunk.output_start,
-            output_end: chunk.output_end,
-            fill_pattern: chunk.fill_pattern,
-            crc32: chunk.crc32,
-        }
-    }
-}
-
-impl From<PipelineAndroidSparseIndex> for PipelineAndroidSparseIndexHint {
-    fn from(index: PipelineAndroidSparseIndex) -> Self {
-        Self {
-            file_hdr_sz: index.file_hdr_sz,
-            chunk_hdr_sz: index.chunk_hdr_sz,
-            blk_sz: index.blk_sz,
-            total_blks: index.total_blks,
-            total_chunks: index.total_chunks,
-            image_checksum: index.image_checksum,
-            chunks: index
-                .chunks
-                .into_iter()
-                .map(PipelineAndroidSparseChunkIndexHint::from)
-                .collect(),
-        }
-    }
-}
-
-impl From<PipelineAndroidSparseChunkIndex> for PipelineAndroidSparseChunkIndexHint {
-    fn from(chunk: PipelineAndroidSparseChunkIndex) -> Self {
-        Self {
-            chunk_index: chunk.chunk_index,
-            chunk_type: chunk.chunk_type,
-            chunk_sz: chunk.chunk_sz,
-            total_sz: chunk.total_sz,
-            chunk_offset: chunk.chunk_offset,
-            payload_offset: chunk.payload_offset,
-            payload_size: chunk.payload_size,
-            output_start: chunk.output_start,
-            output_end: chunk.output_end,
-            fill_pattern: chunk.fill_pattern,
-            crc32: chunk.crc32,
-        }
     }
 }
 
@@ -543,42 +462,8 @@ pub struct PipelineSourceAndroidSparseImgSource {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct PipelineSourceAndroidSparseImg {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index: Option<PipelineAndroidSparseIndex>,
     #[serde(flatten)]
     pub source: Box<PipelineSource>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PipelineAndroidSparseIndex {
-    pub file_hdr_sz: u16,
-    pub chunk_hdr_sz: u16,
-    pub blk_sz: u32,
-    pub total_blks: u32,
-    pub total_chunks: u32,
-    pub image_checksum: u32,
-    pub chunks: Vec<PipelineAndroidSparseChunkIndex>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PipelineAndroidSparseChunkIndex {
-    pub chunk_index: u32,
-    pub chunk_type: u16,
-    pub chunk_sz: u32,
-    pub total_sz: u32,
-    pub chunk_offset: u64,
-    pub payload_offset: u64,
-    pub payload_size: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_start: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_end: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill_pattern: Option<[u8; 4]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub crc32: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -605,14 +490,10 @@ where
 #[serde(untagged)]
 enum PipelineSourceAndroidSparseImgValue {
     Flatten {
-        #[serde(default)]
-        index: Option<PipelineAndroidSparseIndex>,
         #[serde(flatten)]
         source: Box<PipelineSource>,
     },
     Source {
-        #[serde(default)]
-        index: Option<PipelineAndroidSparseIndex>,
         source: Box<PipelineSource>,
     },
 }
@@ -625,9 +506,9 @@ where
 {
     let value = PipelineSourceAndroidSparseImgValue::deserialize(deserializer)?;
     Ok(match value {
-        PipelineSourceAndroidSparseImgValue::Flatten { index, source }
-        | PipelineSourceAndroidSparseImgValue::Source { index, source } => {
-            PipelineSourceAndroidSparseImg { index, source }
+        PipelineSourceAndroidSparseImgValue::Flatten { source }
+        | PipelineSourceAndroidSparseImgValue::Source { source } => {
+            PipelineSourceAndroidSparseImg { source }
         }
     })
 }
@@ -761,89 +642,12 @@ where
     })
 }
 
-#[cfg(any(feature = "std", feature = "web"))]
-impl From<gibblox_android_sparse::AndroidSparseImageIndex> for PipelineAndroidSparseIndex {
-    fn from(index: gibblox_android_sparse::AndroidSparseImageIndex) -> Self {
-        Self {
-            file_hdr_sz: index.file_hdr_sz,
-            chunk_hdr_sz: index.chunk_hdr_sz,
-            blk_sz: index.blk_sz,
-            total_blks: index.total_blks,
-            total_chunks: index.total_chunks,
-            image_checksum: index.image_checksum,
-            chunks: index
-                .chunks
-                .into_iter()
-                .map(PipelineAndroidSparseChunkIndex::from)
-                .collect(),
-        }
-    }
-}
-
-#[cfg(any(feature = "std", feature = "web"))]
-impl From<gibblox_android_sparse::AndroidSparseChunkIndex> for PipelineAndroidSparseChunkIndex {
-    fn from(chunk: gibblox_android_sparse::AndroidSparseChunkIndex) -> Self {
-        Self {
-            chunk_index: chunk.chunk_index,
-            chunk_type: chunk.chunk_type,
-            chunk_sz: chunk.chunk_sz,
-            total_sz: chunk.total_sz,
-            chunk_offset: chunk.chunk_offset,
-            payload_offset: chunk.payload_offset,
-            payload_size: chunk.payload_size,
-            output_start: chunk.output_start,
-            output_end: chunk.output_end,
-            fill_pattern: chunk.fill_pattern,
-            crc32: chunk.crc32,
-        }
-    }
-}
-
-#[cfg(any(feature = "std", feature = "web"))]
-impl From<PipelineAndroidSparseIndex> for gibblox_android_sparse::AndroidSparseImageIndex {
-    fn from(index: PipelineAndroidSparseIndex) -> Self {
-        Self {
-            file_hdr_sz: index.file_hdr_sz,
-            chunk_hdr_sz: index.chunk_hdr_sz,
-            blk_sz: index.blk_sz,
-            total_blks: index.total_blks,
-            total_chunks: index.total_chunks,
-            image_checksum: index.image_checksum,
-            chunks: index
-                .chunks
-                .into_iter()
-                .map(gibblox_android_sparse::AndroidSparseChunkIndex::from)
-                .collect(),
-        }
-    }
-}
-
-#[cfg(any(feature = "std", feature = "web"))]
-impl From<PipelineAndroidSparseChunkIndex> for gibblox_android_sparse::AndroidSparseChunkIndex {
-    fn from(chunk: PipelineAndroidSparseChunkIndex) -> Self {
-        Self {
-            chunk_index: chunk.chunk_index,
-            chunk_type: chunk.chunk_type,
-            chunk_sz: chunk.chunk_sz,
-            total_sz: chunk.total_sz,
-            chunk_offset: chunk.chunk_offset,
-            payload_offset: chunk.payload_offset,
-            payload_size: chunk.payload_size,
-            output_start: chunk.output_start,
-            output_end: chunk.output_end,
-            fill_pattern: chunk.fill_pattern,
-            crc32: chunk.crc32,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, string::String, vec, vec::Vec};
+    use alloc::{boxed::Box, string::String, vec::Vec};
 
     use super::{
-        MAX_PIPELINE_DEPTH, PipelineAndroidSparseChunkIndex, PipelineAndroidSparseIndex,
-        PipelineCodecError, PipelineSource, PipelineSourceAndroidSparseImg,
+        MAX_PIPELINE_DEPTH, PipelineCodecError, PipelineSource, PipelineSourceAndroidSparseImg,
         PipelineSourceAndroidSparseImgSource, PipelineSourceCasync, PipelineSourceCasyncSource,
         PipelineSourceGpt, PipelineSourceGptSource, PipelineSourceHttpSource, PipelineSourceMbr,
         PipelineSourceMbrSource, PipelineSourceXzSource, PipelineValidationError, decode_pipeline,
@@ -861,7 +665,6 @@ mod tests {
                 source: Box::new(PipelineSource::AndroidSparseImg(
                     PipelineSourceAndroidSparseImgSource {
                         android_sparseimg: PipelineSourceAndroidSparseImg {
-                            index: None,
                             source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
                                 xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                                     http: String::from("https://cdn.example.invalid/device.img.xz"),
@@ -870,58 +673,6 @@ mod tests {
                         },
                     },
                 )),
-            },
-        });
-
-        validate_pipeline(&source).expect("pipeline should validate");
-        let encoded = encode_pipeline(&source).expect("encode pipeline");
-        let decoded = decode_pipeline(&encoded).expect("decode pipeline");
-        assert_eq!(decoded, source);
-    }
-
-    #[test]
-    fn roundtrips_android_sparse_index() {
-        let source = PipelineSource::AndroidSparseImg(PipelineSourceAndroidSparseImgSource {
-            android_sparseimg: PipelineSourceAndroidSparseImg {
-                index: Some(PipelineAndroidSparseIndex {
-                    file_hdr_sz: 28,
-                    chunk_hdr_sz: 12,
-                    blk_sz: 4096,
-                    total_blks: 2,
-                    total_chunks: 2,
-                    image_checksum: 0,
-                    chunks: vec![
-                        PipelineAndroidSparseChunkIndex {
-                            chunk_index: 0,
-                            chunk_type: 0xCAC1,
-                            chunk_sz: 1,
-                            total_sz: 4108,
-                            chunk_offset: 28,
-                            payload_offset: 40,
-                            payload_size: 4096,
-                            output_start: Some(0),
-                            output_end: Some(4096),
-                            fill_pattern: None,
-                            crc32: None,
-                        },
-                        PipelineAndroidSparseChunkIndex {
-                            chunk_index: 1,
-                            chunk_type: 0xCAC3,
-                            chunk_sz: 1,
-                            total_sz: 12,
-                            chunk_offset: 4136,
-                            payload_offset: 4148,
-                            payload_size: 0,
-                            output_start: Some(4096),
-                            output_end: Some(8192),
-                            fill_pattern: None,
-                            crc32: None,
-                        },
-                    ],
-                }),
-                source: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
-                    http: String::from("https://cdn.example.invalid/device.img"),
-                })),
             },
         });
 
