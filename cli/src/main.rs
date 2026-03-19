@@ -9,9 +9,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use gibblox_core::{BlockReader, ReadContext, WindowBlockReader};
 use gibblox_pipeline::{
-    OpenPipelineOptions, OptimizePipelineOptions, PipelineCachePolicy, PipelineSource,
-    decode_pipeline, encode_pipeline, open_pipeline, optimize_pipeline,
-    pipeline_bin_header_version, validate_pipeline,
+    OpenPipelineOptions, PipelineCachePolicy, PipelineSource, decode_pipeline, encode_pipeline,
+    open_pipeline, pipeline_bin_header_version, validate_pipeline,
 };
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -88,8 +87,6 @@ enum PipelineCommand {
     Decode(PipelineDecodeArgs),
     /// Validate a pipeline input (YAML by default).
     Validate(PipelineValidateArgs),
-    /// Populate pipeline stage indexes in binary format.
-    Optimize(PipelineOptimizeArgs),
 }
 
 #[derive(Args)]
@@ -120,19 +117,6 @@ struct PipelineValidateArgs {
     /// Parse input as binary pipeline.
     #[arg(long)]
     binary: bool,
-}
-
-#[derive(Args)]
-struct PipelineOptimizeArgs {
-    /// Input binary file ("-" for stdin).
-    #[arg(value_name = "INPUT", default_value = "-")]
-    input: String,
-    /// Output binary file ("-" for stdout).
-    #[arg(short = 'o', long, default_value = "-")]
-    output: String,
-    /// Recompute and overwrite existing indexes.
-    #[arg(long)]
-    force: bool,
 }
 
 #[tokio::main]
@@ -232,44 +216,7 @@ async fn run_pipeline(command: PipelineCommand) -> Result<()> {
         PipelineCommand::Encode(args) => run_pipeline_encode(args),
         PipelineCommand::Decode(args) => run_pipeline_decode(args),
         PipelineCommand::Validate(args) => run_pipeline_validate(args),
-        PipelineCommand::Optimize(args) => run_pipeline_optimize(args).await,
     }
-}
-
-async fn run_pipeline_optimize(args: PipelineOptimizeArgs) -> Result<()> {
-    let bytes = read_input_bytes(&args.input)
-        .with_context(|| format!("read pipeline binary input {}", io_label(&args.input)))?;
-    let mut source = decode_pipeline(&bytes)
-        .with_context(|| format!("decode pipeline binary input {}", io_label(&args.input)))?;
-    validate_pipeline(&source)
-        .with_context(|| format!("validate decoded pipeline from {}", io_label(&args.input)))?;
-
-    let report = optimize_pipeline(
-        &mut source,
-        &OptimizePipelineOptions {
-            force: args.force,
-            ..OptimizePipelineOptions::default()
-        },
-    )
-    .await
-    .context("optimize pipeline indexes")?;
-
-    validate_pipeline(&source).context("validate optimized pipeline")?;
-    let encoded = encode_pipeline(&source).context("encode optimized pipeline binary")?;
-    write_binary_output(&args.output, &encoded, "gibblox pipeline optimize")?;
-
-    let mut stderr = std::io::stderr().lock();
-    writeln!(
-        stderr,
-        "optimized android_sparseimg: visited={}, added={}, updated={}, skipped={}",
-        report.android_sparse_stages_visited,
-        report.android_sparse_indexes_added,
-        report.android_sparse_indexes_updated,
-        report.android_sparse_indexes_skipped,
-    )
-    .context("write optimize report to stderr")?;
-
-    Ok(())
 }
 
 fn run_pipeline_encode(args: PipelineEncodeArgs) -> Result<()> {
@@ -593,20 +540,6 @@ mod tests {
         };
         assert_eq!(args.input, "-");
         assert_eq!(args.output, "-");
-    }
-
-    #[test]
-    fn parse_pipeline_optimize_defaults_to_stdio() {
-        let cli = Cli::parse_from(["gibblox-cli", "pipeline", "optimize"]);
-        let super::Commands::Pipeline(PipelineArgs {
-            command: PipelineCommand::Optimize(args),
-        }) = cli.command.expect("command is present")
-        else {
-            panic!("expected pipeline optimize command")
-        };
-        assert_eq!(args.input, "-");
-        assert_eq!(args.output, "-");
-        assert!(!args.force);
     }
 
     #[test]
