@@ -135,7 +135,10 @@ async fn pipeline_handler(
     let scheme = request_scheme(&headers);
     let noise_url = format!("{scheme}://{host}/noise.bin?seed={seed}&size={size}");
 
-    let pipeline = PipelineSource::Http(PipelineSourceHttpSource { http: noise_url });
+    let pipeline = PipelineSource::Http(PipelineSourceHttpSource {
+        http: noise_url,
+        content: None,
+    });
     let pipeline_bytes = match encode_pipeline(&pipeline) {
         Ok(bytes) => bytes,
         Err(err) => {

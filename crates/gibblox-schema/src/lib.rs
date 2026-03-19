@@ -28,6 +28,13 @@ pub struct PipelineHintEntry {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum PipelineHint {
     AndroidSparseIndex(PipelineAndroidSparseIndexHint),
+    ContentDigest(PipelineContentDigestHint),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PipelineContentDigestHint {
+    pub digest: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -72,6 +79,9 @@ pub enum PipelineHintsValidationError {
     DuplicateHintTypeAndroidSparseIndex {
         pipeline_identity: String,
     },
+    DuplicateHintTypeContentDigest {
+        pipeline_identity: String,
+    },
 }
 
 impl fmt::Display for PipelineHintsValidationError {
@@ -99,6 +109,11 @@ impl fmt::Display for PipelineHintsValidationError {
             Self::DuplicateHintTypeAndroidSparseIndex { pipeline_identity } => write!(
                 f,
                 "pipeline hint entry '{}' contains duplicate AndroidSparseIndex hints",
+                pipeline_identity
+            ),
+            Self::DuplicateHintTypeContentDigest { pipeline_identity } => write!(
+                f,
+                "pipeline hint entry '{}' contains duplicate ContentDigest hints",
                 pipeline_identity
             ),
         }
@@ -176,6 +191,7 @@ pub fn validate_pipeline_hints(hints: &PipelineHints) -> Result<(), PipelineHint
         }
 
         let mut seen_android_sparse = false;
+        let mut seen_content_digest = false;
         for hint in &entry.hints {
             match hint {
                 PipelineHint::AndroidSparseIndex(_) => {
@@ -187,6 +203,16 @@ pub fn validate_pipeline_hints(hints: &PipelineHints) -> Result<(), PipelineHint
                         );
                     }
                     seen_android_sparse = true;
+                }
+                PipelineHint::ContentDigest(_) => {
+                    if seen_content_digest {
+                        return Err(
+                            PipelineHintsValidationError::DuplicateHintTypeContentDigest {
+                                pipeline_identity: identity.to_string(),
+                            },
+                        );
+                    }
+                    seen_content_digest = true;
                 }
             }
         }
@@ -262,6 +288,7 @@ pub fn pipeline_hints_bin_header_version(bytes: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn encode_sorts_entries() {
