@@ -5,7 +5,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, string::ToString, vec::Vec};
 use core::fmt;
 
 use gibblox_core::{BlockReaderConfigIdentity, config_identity_string, derive_config_identity_id};
@@ -19,10 +19,10 @@ pub use gibblox_schema::bin::{
     PIPELINE_HINTS_BIN_FORMAT_VERSION, PIPELINE_HINTS_BIN_HEADER_LEN, PIPELINE_HINTS_BIN_MAGIC,
 };
 pub use gibblox_schema::{
-    PipelineAndroidSparseChunkIndexHint, PipelineAndroidSparseIndexHint, PipelineHint,
-    PipelineHintEntry, PipelineHints, PipelineHintsCodecError, PipelineHintsValidationError,
-    decode_pipeline_hints, decode_pipeline_hints_prefix, encode_pipeline_hints,
-    pipeline_hints_bin_header_version, validate_pipeline_hints,
+    PipelineAndroidSparseChunkIndexHint, PipelineAndroidSparseIndexHint, PipelineContentDigestHint,
+    PipelineHint, PipelineHintEntry, PipelineHints, PipelineHintsCodecError,
+    PipelineHintsValidationError, decode_pipeline_hints, decode_pipeline_hints_prefix,
+    encode_pipeline_hints, pipeline_hints_bin_header_version, validate_pipeline_hints,
 };
 
 pub mod bin;
@@ -151,6 +151,13 @@ pub enum PipelineValidationError {
     EmptyFile,
     EmptyCasyncIndex,
     EmptyCasyncChunkStore,
+    MissingHttpContent,
+    MissingFileContent,
+    MissingCasyncContent,
+    EmptyContentDigest,
+    InvalidContentDigestPrefix { digest: String },
+    InvalidContentDigestLength { digest: String, hex_len: usize },
+    InvalidContentDigestHex { digest: String },
     UnsupportedCasyncArchiveIndex { index: String },
     PipelineDepthExceeded { max_depth: usize },
     InvalidMbrSelectorCount { selectors: usize },
@@ -169,6 +176,30 @@ impl fmt::Display for PipelineValidationError {
             Self::EmptyCasyncChunkStore => {
                 write!(f, "pipeline casync.chunk_store source must not be empty")
             }
+            Self::MissingHttpContent => {
+                write!(f, "pipeline http source must include content metadata")
+            }
+            Self::MissingFileContent => {
+                write!(f, "pipeline file source must include content metadata")
+            }
+            Self::MissingCasyncContent => {
+                write!(f, "pipeline casync source must include content metadata")
+            }
+            Self::EmptyContentDigest => {
+                write!(f, "pipeline content digest must not be empty")
+            }
+            Self::InvalidContentDigestPrefix { digest } => write!(
+                f,
+                "pipeline content digest must use 'sha512:' prefix, got '{digest}'"
+            ),
+            Self::InvalidContentDigestLength { digest, hex_len } => write!(
+                f,
+                "pipeline content digest '{digest}' must include exactly 128 lowercase hex chars, got {hex_len}"
+            ),
+            Self::InvalidContentDigestHex { digest } => write!(
+                f,
+                "pipeline content digest '{digest}' must contain only lowercase hex chars"
+            ),
             Self::UnsupportedCasyncArchiveIndex { index } => write!(
                 f,
                 "unsupported casync archive index (.caidx) in pipeline: {index}; expected casync blob index (.caibx)"
@@ -215,12 +246,20 @@ fn validate_pipeline_source(
             if source.http.trim().is_empty() {
                 return Err(PipelineValidationError::EmptyHttp);
             }
+            let Some(content) = source.content.as_ref() else {
+                return Err(PipelineValidationError::MissingHttpContent);
+            };
+            validate_pipeline_content(content)?;
             Ok(())
         }
         PipelineSource::File(source) => {
             if source.file.trim().is_empty() {
                 return Err(PipelineValidationError::EmptyFile);
             }
+            let Some(content) = source.content.as_ref() else {
+                return Err(PipelineValidationError::MissingFileContent);
+            };
+            validate_pipeline_content(content)?;
             Ok(())
         }
         PipelineSource::Casync(source) => {
@@ -241,13 +280,28 @@ fn validate_pipeline_source(
                     return Err(PipelineValidationError::EmptyCasyncChunkStore);
                 }
             }
+            let Some(content) = source.casync.content.as_ref() else {
+                return Err(PipelineValidationError::MissingCasyncContent);
+            };
+            validate_pipeline_content(content)?;
             Ok(())
         }
-        PipelineSource::Xz(source) => validate_pipeline_source(source.xz.as_ref(), depth + 1),
+        PipelineSource::Xz(source) => {
+            if let Some(content) = source.content.as_ref() {
+                validate_pipeline_content(content)?;
+            }
+            validate_pipeline_source(source.xz.as_ref(), depth + 1)
+        }
         PipelineSource::AndroidSparseImg(source) => {
+            if let Some(content) = source.android_sparseimg.content.as_ref() {
+                validate_pipeline_content(content)?;
+            }
             validate_pipeline_source(source.android_sparseimg.source.as_ref(), depth + 1)
         }
         PipelineSource::Mbr(source) => {
+            if let Some(content) = source.mbr.content.as_ref() {
+                validate_pipeline_content(content)?;
+            }
             let mut selectors = 0usize;
             if let Some(partuuid) = source.mbr.partuuid.as_deref() {
                 if partuuid.trim().is_empty() {
@@ -264,6 +318,9 @@ fn validate_pipeline_source(
             validate_pipeline_source(source.mbr.source.as_ref(), depth + 1)
         }
         PipelineSource::Gpt(source) => {
+            if let Some(content) = source.gpt.content.as_ref() {
+                validate_pipeline_content(content)?;
+            }
             let mut selectors = 0usize;
             if let Some(partlabel) = source.gpt.partlabel.as_deref() {
                 if partlabel.trim().is_empty() {
@@ -286,6 +343,39 @@ fn validate_pipeline_source(
             validate_pipeline_source(source.gpt.source.as_ref(), depth + 1)
         }
     }
+}
+
+fn validate_pipeline_content(
+    content: &PipelineSourceContent,
+) -> Result<(), PipelineValidationError> {
+    let digest = content.digest.trim();
+    if digest.is_empty() {
+        return Err(PipelineValidationError::EmptyContentDigest);
+    }
+
+    let Some(hex) = digest.strip_prefix("sha512:") else {
+        return Err(PipelineValidationError::InvalidContentDigestPrefix {
+            digest: digest.to_string(),
+        });
+    };
+
+    if hex.len() != 128 {
+        return Err(PipelineValidationError::InvalidContentDigestLength {
+            digest: digest.to_string(),
+            hex_len: hex.len(),
+        });
+    }
+
+    if !hex
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(PipelineValidationError::InvalidContentDigestHex {
+            digest: digest.to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 fn strip_query_and_fragment(value: &str) -> &str {
@@ -402,12 +492,16 @@ pub enum PipelineSource {
 #[serde(deny_unknown_fields)]
 pub struct PipelineSourceHttpSource {
     pub http: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineSourceFileSource {
     pub file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -433,6 +527,7 @@ where
         PipelineSourceCasyncValue::Index(index) => PipelineSourceCasync {
             index,
             chunk_store: None,
+            content: None,
         },
         PipelineSourceCasyncValue::Source(source) => source,
     })
@@ -444,6 +539,15 @@ pub struct PipelineSourceCasync {
     pub index: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunk_store: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineSourceContent {
+    pub digest: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -451,6 +555,8 @@ pub struct PipelineSourceCasync {
 pub struct PipelineSourceXzSource {
     #[serde(deserialize_with = "deserialize_nested_pipeline_source")]
     pub xz: Box<PipelineSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -464,6 +570,8 @@ pub struct PipelineSourceAndroidSparseImgSource {
 pub struct PipelineSourceAndroidSparseImg {
     #[serde(flatten)]
     pub source: Box<PipelineSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -492,9 +600,13 @@ enum PipelineSourceAndroidSparseImgValue {
     Flatten {
         #[serde(flatten)]
         source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
     },
     Source {
         source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
     },
 }
 
@@ -506,9 +618,9 @@ where
 {
     let value = PipelineSourceAndroidSparseImgValue::deserialize(deserializer)?;
     Ok(match value {
-        PipelineSourceAndroidSparseImgValue::Flatten { source }
-        | PipelineSourceAndroidSparseImgValue::Source { source } => {
-            PipelineSourceAndroidSparseImg { source }
+        PipelineSourceAndroidSparseImgValue::Flatten { source, content }
+        | PipelineSourceAndroidSparseImgValue::Source { source, content } => {
+            PipelineSourceAndroidSparseImg { source, content }
         }
     })
 }
@@ -528,6 +640,8 @@ pub struct PipelineSourceMbr {
     pub index: Option<u32>,
     #[serde(flatten)]
     pub source: Box<PipelineSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -540,6 +654,8 @@ enum PipelineSourceMbrValue {
         index: Option<u32>,
         #[serde(flatten)]
         source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
     },
     Source {
         #[serde(default)]
@@ -547,6 +663,8 @@ enum PipelineSourceMbrValue {
         #[serde(default)]
         index: Option<u32>,
         source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
     },
 }
 
@@ -560,15 +678,18 @@ where
             partuuid,
             index,
             source,
+            content,
         }
         | PipelineSourceMbrValue::Source {
             partuuid,
             index,
             source,
+            content,
         } => PipelineSourceMbr {
             partuuid,
             index,
             source,
+            content,
         },
     })
 }
@@ -590,6 +711,8 @@ pub struct PipelineSourceGpt {
     pub index: Option<u32>,
     #[serde(flatten)]
     pub source: Box<PipelineSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -604,6 +727,8 @@ enum PipelineSourceGptValue {
         index: Option<u32>,
         #[serde(flatten)]
         source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
     },
     Source {
         #[serde(default)]
@@ -613,6 +738,8 @@ enum PipelineSourceGptValue {
         #[serde(default)]
         index: Option<u32>,
         source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
     },
 }
 
@@ -627,17 +754,20 @@ where
             partuuid,
             index,
             source,
+            content,
         }
         | PipelineSourceGptValue::Source {
             partlabel,
             partuuid,
             index,
             source,
+            content,
         } => PipelineSourceGpt {
             partlabel,
             partuuid,
             index,
             source,
+            content,
         },
     })
 }
@@ -649,11 +779,21 @@ mod tests {
     use super::{
         MAX_PIPELINE_DEPTH, PipelineCodecError, PipelineSource, PipelineSourceAndroidSparseImg,
         PipelineSourceAndroidSparseImgSource, PipelineSourceCasync, PipelineSourceCasyncSource,
-        PipelineSourceGpt, PipelineSourceGptSource, PipelineSourceHttpSource, PipelineSourceMbr,
-        PipelineSourceMbrSource, PipelineSourceXzSource, PipelineValidationError, decode_pipeline,
-        encode_pipeline, pipeline_bin_header_version, pipeline_identity_id,
-        pipeline_identity_string, validate_pipeline,
+        PipelineSourceContent, PipelineSourceGpt, PipelineSourceGptSource,
+        PipelineSourceHttpSource, PipelineSourceMbr, PipelineSourceMbrSource,
+        PipelineSourceXzSource, PipelineValidationError, decode_pipeline, encode_pipeline,
+        pipeline_bin_header_version, pipeline_identity_id, pipeline_identity_string,
+        validate_pipeline,
     };
+
+    fn sample_content() -> PipelineSourceContent {
+        PipelineSourceContent {
+            digest: String::from(
+                "sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+            ),
+            size_bytes: 123,
+        }
+    }
 
     #[test]
     fn validates_and_roundtrips_nested_pipeline() {
@@ -668,11 +808,15 @@ mod tests {
                             source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
                                 xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                                     http: String::from("https://cdn.example.invalid/device.img.xz"),
+                                    content: Some(sample_content()),
                                 })),
+                                content: None,
                             })),
+                            content: None,
                         },
                     },
                 )),
+                content: None,
             },
         });
 
@@ -694,6 +838,9 @@ gpt:
         xz:
           source:
             http: https://cdn.example.invalid/device.img.xz
+            content:
+              digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+              size_bytes: 123
 "#,
         )
         .expect("parse source-style YAML");
@@ -713,6 +860,7 @@ gpt:
             casync: PipelineSourceCasync {
                 index: String::from("https://cdn.example.invalid/indexes/rootfs.caidx?x=1"),
                 chunk_store: None,
+                content: Some(sample_content()),
             },
         });
 
@@ -731,7 +879,9 @@ gpt:
                 index: None,
                 source: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                     http: String::from("https://cdn.example.invalid/rootfs.img"),
+                    content: Some(sample_content()),
                 })),
+                content: None,
             },
         });
 
@@ -751,7 +901,9 @@ gpt:
                 index: None,
                 source: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                     http: String::from("https://cdn.example.invalid/rootfs.img"),
+                    content: Some(sample_content()),
                 })),
+                content: None,
             },
         });
 
@@ -763,11 +915,13 @@ gpt:
     fn rejects_depth_over_limit() {
         let mut source = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs.img"),
+            content: Some(sample_content()),
         });
 
         for _ in 0..=MAX_PIPELINE_DEPTH {
             source = PipelineSource::Xz(PipelineSourceXzSource {
                 xz: Box::new(source),
+                content: None,
             });
         }
 
@@ -790,12 +944,12 @@ gpt:
     fn rejects_unsupported_format_version() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&crate::bin::PIPELINE_BIN_MAGIC);
-        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&3u16.to_le_bytes());
 
         let err = decode_pipeline(&bytes).expect_err("unsupported version should fail");
         assert!(matches!(
             err,
-            PipelineCodecError::UnsupportedFormatVersion(2)
+            PipelineCodecError::UnsupportedFormatVersion(3)
         ));
     }
 
@@ -803,10 +957,11 @@ gpt:
     fn reads_header_version() {
         let source = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs.img"),
+            content: Some(sample_content()),
         });
         let bytes = encode_pipeline(&source).expect("encode pipeline");
 
-        assert_eq!(pipeline_bin_header_version(&bytes), Some(1));
+        assert_eq!(pipeline_bin_header_version(&bytes), Some(2));
     }
 
     #[test]
@@ -819,8 +974,11 @@ gpt:
                 source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
                     xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                         http: String::from("https://cdn.example.invalid/device.img.xz"),
+                        content: Some(sample_content()),
                     })),
+                    content: None,
                 })),
+                content: None,
             },
         });
 
@@ -835,12 +993,55 @@ gpt:
     fn identity_changes_when_descriptor_changes() {
         let a = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs-a.img"),
+            content: Some(sample_content()),
         });
         let b = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs-b.img"),
+            content: Some(sample_content()),
         });
 
         assert_ne!(pipeline_identity_string(&a), pipeline_identity_string(&b));
         assert_ne!(pipeline_identity_id(&a), pipeline_identity_id(&b));
+    }
+
+    #[test]
+    fn rejects_http_without_content() {
+        let source = PipelineSource::Http(PipelineSourceHttpSource {
+            http: String::from("https://cdn.example.invalid/rootfs.img"),
+            content: None,
+        });
+
+        let err = validate_pipeline(&source).expect_err("terminal content should be required");
+        assert_eq!(err, PipelineValidationError::MissingHttpContent);
+    }
+
+    #[test]
+    fn accepts_missing_wrapper_content() {
+        let source = PipelineSource::Xz(PipelineSourceXzSource {
+            xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
+                http: String::from("https://cdn.example.invalid/rootfs.img"),
+                content: Some(sample_content()),
+            })),
+            content: None,
+        });
+
+        validate_pipeline(&source).expect("wrapper content is optional");
+    }
+
+    #[test]
+    fn rejects_invalid_content_digest() {
+        let source = PipelineSource::Http(PipelineSourceHttpSource {
+            http: String::from("https://cdn.example.invalid/rootfs.img"),
+            content: Some(PipelineSourceContent {
+                digest: String::from("sha512:NOTHEX"),
+                size_bytes: 99,
+            }),
+        });
+
+        let err = validate_pipeline(&source).expect_err("digest must be lowercase hex");
+        assert!(matches!(
+            err,
+            PipelineValidationError::InvalidContentDigestLength { .. }
+        ));
     }
 }
