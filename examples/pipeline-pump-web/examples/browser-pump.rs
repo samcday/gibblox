@@ -8,8 +8,11 @@ use axum::{
     response::Response,
     routing::get,
 };
-use gibblox_pipeline::{PipelineSource, PipelineSourceHttpSource, encode_pipeline};
+use gibblox_pipeline::{
+    PipelineSource, PipelineSourceContent, PipelineSourceHttpSource, encode_pipeline,
+};
 use serde::Deserialize;
+use sha2::{Digest, Sha512};
 use std::net::SocketAddr;
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::process::Command;
@@ -134,10 +137,19 @@ async fn pipeline_handler(
     let host = request_host(&headers);
     let scheme = request_scheme(&headers);
     let noise_url = format!("{scheme}://{host}/noise.bin?seed={seed}&size={size}");
+    let content = match tokio::task::spawn_blocking(move || noise_content(seed, size)).await {
+        Ok(content) => content,
+        Err(err) => {
+            return text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to compute content metadata: {err}").as_str(),
+            );
+        }
+    };
 
     let pipeline = PipelineSource::Http(PipelineSourceHttpSource {
         http: noise_url,
-        content: None,
+        content: Some(content),
     });
     let pipeline_bytes = match encode_pipeline(&pipeline) {
         Ok(bytes) => bytes,
@@ -405,6 +417,41 @@ fn parse_range_header(raw_range: &str, total_size: u64) -> Result<ByteRange, &'s
 fn fill_noise(seed: u64, start: u64, out: &mut [u8]) {
     for (index, byte) in out.iter_mut().enumerate() {
         *byte = noise_byte(seed, start.saturating_add(index as u64));
+    }
+}
+
+fn noise_content(seed: u64, total_size: u64) -> PipelineSourceContent {
+    const CHUNK_SIZE: usize = 64 * 1024;
+    let mut hasher = Sha512::new();
+    let mut offset = 0u64;
+    let mut chunk = vec![0u8; CHUNK_SIZE];
+
+    while offset < total_size {
+        let remaining = total_size - offset;
+        let len = remaining.min(CHUNK_SIZE as u64) as usize;
+        fill_noise(seed, offset, &mut chunk[..len]);
+        hasher.update(&chunk[..len]);
+        offset += len as u64;
+    }
+
+    let digest_bytes = hasher.finalize();
+    let mut digest = String::from("sha512:");
+    digest.reserve(128);
+    for byte in digest_bytes {
+        digest.push(hex_char(byte >> 4));
+        digest.push(hex_char(byte & 0x0f));
+    }
+
+    PipelineSourceContent {
+        digest,
+        size_bytes: total_size,
+    }
+}
+
+fn hex_char(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        _ => (b'a' + (nibble - 10)) as char,
     }
 }
 
