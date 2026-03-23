@@ -261,6 +261,27 @@ fn validate_range_response(
     expected_end: u64,
     expected_len: usize,
 ) -> Result<(), String> {
+    if status == StatusCode::OK {
+        if expected_start != 0 {
+            return Err(format!(
+                "GET status {status} (expected 206 Partial Content)"
+            ));
+        }
+
+        let content_length = content_length.ok_or_else(|| {
+            "missing Content-Length on 200 response to ranged request".to_string()
+        })?;
+        let parsed_len = content_length
+            .parse::<usize>()
+            .map_err(|_| format!("invalid Content-Length header '{content_length}'"))?;
+        if parsed_len != expected_len {
+            return Err(format!(
+                "content-length mismatch: got {parsed_len}, expected {expected_len}"
+            ));
+        }
+        return Ok(());
+    }
+
     if status != StatusCode::PARTIAL_CONTENT {
         return Err(format!(
             "GET status {status} (expected 206 Partial Content)"

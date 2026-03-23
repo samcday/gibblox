@@ -21,6 +21,7 @@ enum RangeBehavior {
     Ignore,
     IgnoreFirstThenHonor,
     WrongContentRange,
+    FullRangeAs200,
 }
 
 struct TestServerState {
@@ -107,10 +108,24 @@ async fn handle_request(
             RangeBehavior::WrongContentRange => {
                 wrong_content_range = true;
             }
+            RangeBehavior::FullRangeAs200 => {}
         }
     }
 
     let (status, body, content_range) = match (range, ignore_range) {
+        (Some((0, end)), false) if matches!(state.range_behavior, RangeBehavior::FullRangeAs200) => {
+            let end = end.min(total_len.saturating_sub(1));
+            if end + 1 >= total_len {
+                (StatusCode::OK, Bytes::copy_from_slice(&state.data), None)
+            } else {
+                let slice = &state.data[0..=end as usize];
+                (
+                    StatusCode::PARTIAL_CONTENT,
+                    Bytes::copy_from_slice(slice),
+                    Some(format!("bytes 0-{end}/{total_len}")),
+                )
+            }
+        }
         (Some((start, end)), false) if start < total_len => {
             let end = end.min(total_len - 1);
             let slice = &state.data[start as usize..=end as usize];
@@ -287,6 +302,28 @@ async fn http_reader_rejects_mismatched_content_range_header() {
         .expect_err("range read should reject mismatched Content-Range");
     assert_eq!(err.kind(), GibbloxErrorKind::Io);
     assert!(err.to_string().contains("content-range mismatch"));
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn http_reader_accepts_200_for_full_range_from_zero() {
+    let data = data_blob(257);
+    let (url, shutdown) =
+        start_server_with_behavior(data.clone(), RangeBehavior::FullRangeAs200).await;
+    let source = HttpReader::new_with_size(url, 512, data.len() as u64)
+        .await
+        .expect("http source");
+    let source = block_reader(source);
+
+    let mut buf = vec![0u8; 512];
+    let read = source
+        .read_blocks(0, &mut buf, ReadContext::FOREGROUND)
+        .await
+        .expect("full-range read should accept 200");
+    assert_eq!(read, 512);
+    assert_eq!(&buf[..data.len()], &data[..]);
+    assert!(buf[data.len()..].iter().all(|b| *b == 0));
 
     let _ = shutdown.send(());
 }
