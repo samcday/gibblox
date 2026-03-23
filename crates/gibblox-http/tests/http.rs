@@ -113,7 +113,9 @@ async fn handle_request(
     }
 
     let (status, body, content_range) = match (range, ignore_range) {
-        (Some((0, end)), false) if matches!(state.range_behavior, RangeBehavior::FullRangeAs200) => {
+        (Some((0, end)), false)
+            if matches!(state.range_behavior, RangeBehavior::FullRangeAs200) =>
+        {
             let end = end.min(total_len.saturating_sub(1));
             if end + 1 >= total_len {
                 (StatusCode::OK, Bytes::copy_from_slice(&state.data), None)
