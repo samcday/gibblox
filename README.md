@@ -73,17 +73,11 @@ gibblox /tmp/pipeline.bin > /tmp/ipxe.iso
 - `gibblox-cache-store-opfs`: OPFS cache backend for wasm web apps.
 - `gibblox-cli`: CLI utility for pipeline YAML/binary conversion and validation.
 
-## ext4: today vs tomorrow
+## ext4
 
-Today:
-- `gibblox-ext4` works on native and wasm targets.
-- The parser path is still sync under the hood; async APIs bridge through blocking reads.
-- This is acceptable for now when gibblox runs in a worker thread, but long ext4 operations can still monopolize that worker.
-
-Tomorrow:
-- Move ext4 loading and file reads to a true async path end-to-end (no blocking bridge).
-- Keep worker responsiveness by chunking/coop-yielding large ext4 operations.
-- Push ext4 support toward a clean `no_std + alloc` profile.
+- `gibblox-ext4` uses an async-first parser backend via `ext4plus`.
+- ext4 load and read operations run without blocking bridges.
+- The crate remains read-only at the gibblox/gobblytes integration surface.
 
 ## Usage (native)
 ```rust
