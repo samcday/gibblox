@@ -10,7 +10,7 @@ keywords = ["gibblox"]
 
 [dependencies]
 async-trait = "0.1.89"
-ext4-view = { workspace = true, features = ["async"] }
+ext4plus = { workspace = true }
 gibblox-core = { workspace = true }
-pollster = "0.4.0"
+gobblytes-core = { workspace = true }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
