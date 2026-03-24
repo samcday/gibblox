@@ -23,6 +23,7 @@ pub struct HttpReaderConfig {
     pub url: Url,
     pub block_size: u32,
     pub size_bytes: Option<u64>,
+    pub cors_safelisted_mode: bool,
 }
 
 impl HttpReaderConfig {
@@ -31,6 +32,7 @@ impl HttpReaderConfig {
             url,
             block_size,
             size_bytes: None,
+            cors_safelisted_mode: false,
         }
     }
 
@@ -39,7 +41,13 @@ impl HttpReaderConfig {
             url,
             block_size,
             size_bytes: Some(size_bytes),
+            cors_safelisted_mode: false,
         }
+    }
+
+    pub fn with_cors_safelisted_mode(mut self, enabled: bool) -> Self {
+        self.cors_safelisted_mode = enabled;
+        self
     }
 
     fn validate(&self) -> GibbloxResult<()> {
@@ -76,7 +84,7 @@ impl HttpReader {
         } else {
             tracing::debug!(url = %config.url, "http read source probe");
             client
-                .probe_size(&config.url)
+                .probe_size(&config.url, config.cors_safelisted_mode)
                 .await
                 .map_err(map_http_err("probe size"))?
         };
@@ -155,7 +163,13 @@ impl ByteReader for HttpReader {
         );
         let read = self
             .inner
-            .read_range(&self.config.url, range.clone(), &mut buf[..read_len], ctx)
+            .read_range(
+                &self.config.url,
+                range.clone(),
+                &mut buf[..read_len],
+                ctx,
+                self.config.cors_safelisted_mode,
+            )
             .await
             .map_err(map_http_err("read range"))?;
         if read != read_len {
@@ -195,12 +209,12 @@ impl HttpClient {
         }
     }
 
-    async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
+    async fn probe_size(&self, url: &Url, cors_safelisted_mode: bool) -> Result<u64, HttpError> {
         match self {
             #[cfg(not(target_arch = "wasm32"))]
-            HttpClient::Native(c) => c.probe_size(url).await,
+            HttpClient::Native(c) => c.probe_size(url, cors_safelisted_mode).await,
             #[cfg(target_arch = "wasm32")]
-            HttpClient::Wasm(c) => c.probe_size(url).await,
+            HttpClient::Wasm(c) => c.probe_size(url, cors_safelisted_mode).await,
         }
     }
 
@@ -210,12 +224,19 @@ impl HttpClient {
         range: RangeInclusive<u64>,
         buf: &mut [u8],
         ctx: ReadContext,
+        cors_safelisted_mode: bool,
     ) -> Result<usize, HttpError> {
         match self {
             #[cfg(not(target_arch = "wasm32"))]
-            HttpClient::Native(c) => c.read_range(url, range, buf, ctx).await,
+            HttpClient::Native(c) => {
+                c.read_range(url, range, buf, ctx, cors_safelisted_mode)
+                    .await
+            }
             #[cfg(target_arch = "wasm32")]
-            HttpClient::Wasm(c) => c.read_range(url, range, buf, ctx).await,
+            HttpClient::Wasm(c) => {
+                c.read_range(url, range, buf, ctx, cors_safelisted_mode)
+                    .await
+            }
         }
     }
 }

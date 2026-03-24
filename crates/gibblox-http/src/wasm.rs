@@ -76,8 +76,12 @@ impl Client {
         })
     }
 
-    pub async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
-        let priority_header_enabled = self.priority_header_enabled();
+    pub async fn probe_size(
+        &self,
+        url: &Url,
+        cors_safelisted_mode: bool,
+    ) -> Result<u64, HttpError> {
+        let priority_header_enabled = self.priority_header_enabled() && !cors_safelisted_mode;
         if priority_header_enabled {
             match self.probe_size_once(url, true).await {
                 Ok(size_bytes) => return Ok(size_bytes),
@@ -191,8 +195,9 @@ impl Client {
         range: RangeInclusive<u64>,
         buf: &mut [u8],
         ctx: ReadContext,
+        cors_safelisted_mode: bool,
     ) -> Result<usize, HttpError> {
-        let use_priority_header = self.priority_header_enabled();
+        let use_priority_header = self.priority_header_enabled() && !cors_safelisted_mode;
         let start = *range.start();
         let end = *range.end();
         let expected_len = range_len(start, end)?;
@@ -269,10 +274,9 @@ impl Client {
             if let Err(message) = validate_range_response(
                 status,
                 content_range.as_deref(),
-                content_length.as_deref(),
                 start,
                 end,
-                expected_len,
+                cors_safelisted_mode,
             ) {
                 last_err = HttpError::Msg(message);
                 tracing::warn!(
@@ -461,15 +465,18 @@ fn header_value(headers: &Headers, name: &str) -> Result<Option<String>, HttpErr
 fn validate_range_response(
     status: u16,
     content_range: Option<&str>,
-    content_length: Option<&str>,
     expected_start: u64,
     expected_end: u64,
-    expected_len: usize,
+    cors_safelisted_mode: bool,
 ) -> Result<(), String> {
     if status != PARTIAL_CONTENT_STATUS {
         return Err(format!(
             "GET status {status} (expected {PARTIAL_CONTENT_STATUS} Partial Content)"
         ));
+    }
+
+    if cors_safelisted_mode {
+        return Ok(());
     }
 
     let content_range =
@@ -480,17 +487,6 @@ fn validate_range_response(
         return Err(format!(
             "content-range mismatch: got bytes {start}-{end}, expected bytes {expected_start}-{expected_end}"
         ));
-    }
-
-    if let Some(content_length) = content_length {
-        let parsed_len = content_length
-            .parse::<usize>()
-            .map_err(|_| format!("invalid Content-Length header '{content_length}'"))?;
-        if parsed_len != expected_len {
-            return Err(format!(
-                "content-length mismatch: got {parsed_len}, expected {expected_len}"
-            ));
-        }
     }
 
     Ok(())

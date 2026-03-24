@@ -30,7 +30,11 @@ impl Client {
         Ok(Self { inner: client })
     }
 
-    pub async fn probe_size(&self, url: &Url) -> Result<u64, HttpError> {
+    pub async fn probe_size(
+        &self,
+        url: &Url,
+        _cors_safelisted_mode: bool,
+    ) -> Result<u64, HttpError> {
         tracing::trace!(%url, "http probe range");
         let start = Instant::now();
         let resp = self
@@ -106,6 +110,7 @@ impl Client {
         range: RangeInclusive<u64>,
         buf: &mut [u8],
         ctx: ReadContext,
+        _cors_safelisted_mode: bool,
     ) -> Result<usize, HttpError> {
         let start = *range.start();
         let end = *range.end();

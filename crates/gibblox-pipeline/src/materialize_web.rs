@@ -115,7 +115,8 @@ fn resolve_pipeline_byte_source<'a>(
         match pipeline_source {
             PipelineSource::Http(source) => {
                 let url = parse_url(source.http.as_str(), "pipeline http source")?;
-                let config = HttpReaderConfig::new(url, opts.image_block_size);
+                let config = HttpReaderConfig::new(url, opts.image_block_size)
+                    .with_cors_safelisted_mode(source.cors_safelisted_mode);
                 let reader = HttpReader::open(config).await?;
 
                 if should_cache_head_stage(opts, true) {
@@ -150,7 +151,8 @@ async fn resolve_http_source(
     opts: &OpenPipelineOptions,
 ) -> GibbloxResult<DynBlockReader> {
     let url = parse_url(source.http.as_str(), "pipeline http source")?;
-    let config = HttpReaderConfig::new(url, opts.image_block_size);
+    let config = HttpReaderConfig::new(url, opts.image_block_size)
+        .with_cors_safelisted_mode(source.cors_safelisted_mode);
     let reader = BlockByteReader::new(HttpReader::open(config).await?, opts.image_block_size)?;
     let reader: Arc<dyn BlockReader> = Arc::new(reader);
     maybe_wrap_head_cache(reader, opts, true, "http").await
