@@ -71,7 +71,8 @@ pub(crate) fn open_pipeline_source<'a>(
 
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
-                let config = HttpReaderConfig::new(url.clone(), opts.image_block_size);
+                let config = HttpReaderConfig::new(url.clone(), opts.image_block_size)
+                    .with_cors_safelisted_mode(source.cors_safelisted_mode);
                 let reader = HttpReader::open(config)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
@@ -162,7 +163,9 @@ fn open_pipeline_byte_source<'a>(
 
                 let url =
                     Url::parse(value).with_context(|| format!("parse HTTP source URL {value}"))?;
-                let reader = HttpReader::new(url.clone(), opts.image_block_size)
+                let config = HttpReaderConfig::new(url.clone(), opts.image_block_size)
+                    .with_cors_safelisted_mode(source.cors_safelisted_mode);
+                let reader = HttpReader::open(config)
                     .await
                     .map_err(|err| anyhow!("open HTTP source {url}: {err}"))?;
 

@@ -24,6 +24,7 @@ pub enum PipelineSourceBin {
     },
     Http {
         url: String,
+        cors_safelisted_mode: bool,
         content: Option<PipelineSourceContent>,
     },
     File {
@@ -61,9 +62,15 @@ impl From<PipelineSource> for PipelineSourceBin {
                 chunk_store: casync.chunk_store,
                 content: casync.content,
             },
-            PipelineSource::Http(PipelineSourceHttpSource { http, content }) => {
-                Self::Http { url: http, content }
-            }
+            PipelineSource::Http(PipelineSourceHttpSource {
+                http,
+                cors_safelisted_mode,
+                content,
+            }) => Self::Http {
+                url: http,
+                cors_safelisted_mode,
+                content,
+            },
             PipelineSource::File(PipelineSourceFileSource { file, content }) => Self::File {
                 path: file,
                 content,
@@ -126,9 +133,15 @@ impl From<PipelineSourceBin> for PipelineSource {
                     content,
                 },
             }),
-            PipelineSourceBin::Http { url, content } => {
-                Self::Http(PipelineSourceHttpSource { http: url, content })
-            }
+            PipelineSourceBin::Http {
+                url,
+                cors_safelisted_mode,
+                content,
+            } => Self::Http(PipelineSourceHttpSource {
+                http: url,
+                cors_safelisted_mode,
+                content,
+            }),
             PipelineSourceBin::File { path, content } => Self::File(PipelineSourceFileSource {
                 file: path,
                 content,

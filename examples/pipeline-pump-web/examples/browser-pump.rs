@@ -149,6 +149,7 @@ async fn pipeline_handler(
 
     let pipeline = PipelineSource::Http(PipelineSourceHttpSource {
         http: noise_url,
+        cors_safelisted_mode: false,
         content: Some(content),
     });
     let pipeline_bytes = match encode_pipeline(&pipeline) {

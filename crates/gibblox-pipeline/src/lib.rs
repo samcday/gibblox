@@ -492,8 +492,14 @@ pub enum PipelineSource {
 #[serde(deny_unknown_fields)]
 pub struct PipelineSourceHttpSource {
     pub http: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cors_safelisted_mode: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<PipelineSourceContent>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -808,6 +814,7 @@ mod tests {
                             source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
                                 xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                                     http: String::from("https://cdn.example.invalid/device.img.xz"),
+                                    cors_safelisted_mode: false,
                                     content: Some(sample_content()),
                                 })),
                                 content: None,
@@ -879,6 +886,7 @@ gpt:
                 index: None,
                 source: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                     http: String::from("https://cdn.example.invalid/rootfs.img"),
+                    cors_safelisted_mode: false,
                     content: Some(sample_content()),
                 })),
                 content: None,
@@ -901,6 +909,7 @@ gpt:
                 index: None,
                 source: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                     http: String::from("https://cdn.example.invalid/rootfs.img"),
+                    cors_safelisted_mode: false,
                     content: Some(sample_content()),
                 })),
                 content: None,
@@ -915,6 +924,7 @@ gpt:
     fn rejects_depth_over_limit() {
         let mut source = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs.img"),
+            cors_safelisted_mode: false,
             content: Some(sample_content()),
         });
 
@@ -957,6 +967,7 @@ gpt:
     fn reads_header_version() {
         let source = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs.img"),
+            cors_safelisted_mode: false,
             content: Some(sample_content()),
         });
         let bytes = encode_pipeline(&source).expect("encode pipeline");
@@ -974,6 +985,7 @@ gpt:
                 source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
                     xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                         http: String::from("https://cdn.example.invalid/device.img.xz"),
+                        cors_safelisted_mode: false,
                         content: Some(sample_content()),
                     })),
                     content: None,
@@ -993,10 +1005,12 @@ gpt:
     fn identity_changes_when_descriptor_changes() {
         let a = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs-a.img"),
+            cors_safelisted_mode: false,
             content: Some(sample_content()),
         });
         let b = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs-b.img"),
+            cors_safelisted_mode: false,
             content: Some(sample_content()),
         });
 
@@ -1008,6 +1022,7 @@ gpt:
     fn rejects_http_without_content() {
         let source = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs.img"),
+            cors_safelisted_mode: false,
             content: None,
         });
 
@@ -1020,6 +1035,7 @@ gpt:
         let source = PipelineSource::Xz(PipelineSourceXzSource {
             xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                 http: String::from("https://cdn.example.invalid/rootfs.img"),
+                cors_safelisted_mode: false,
                 content: Some(sample_content()),
             })),
             content: None,
@@ -1032,6 +1048,7 @@ gpt:
     fn rejects_invalid_content_digest() {
         let source = PipelineSource::Http(PipelineSourceHttpSource {
             http: String::from("https://cdn.example.invalid/rootfs.img"),
+            cors_safelisted_mode: false,
             content: Some(PipelineSourceContent {
                 digest: String::from("sha512:NOTHEX"),
                 size_bytes: 99,
@@ -1043,5 +1060,26 @@ gpt:
             err,
             PipelineValidationError::InvalidContentDigestLength { .. }
         ));
+    }
+
+    #[test]
+    fn parses_http_cors_safelisted_mode() {
+        let source: PipelineSource = serde_yaml::from_str(
+            r#"
+http: https://cdn.example.invalid/rootfs.img
+cors_safelisted_mode: true
+content:
+  digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+  size_bytes: 123
+"#,
+        )
+        .expect("parse http pipeline with cors safelisted mode");
+
+        match source {
+            PipelineSource::Http(source) => {
+                assert!(source.cors_safelisted_mode);
+            }
+            other => panic!("expected http source, got {other:?}"),
+        }
     }
 }

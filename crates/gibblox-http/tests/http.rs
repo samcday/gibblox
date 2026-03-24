@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use gibblox_core::{BlockByteReader, BlockReader, GibbloxErrorKind, ReadContext};
-use gibblox_http::HttpReader;
+use gibblox_http::{HttpReader, HttpReaderConfig};
 
 #[derive(Clone, Copy)]
 enum RangeBehavior {
@@ -302,6 +302,27 @@ async fn http_reader_rejects_mismatched_content_range_header() {
         .read_blocks(2, &mut buf, ReadContext::FOREGROUND)
         .await
         .expect_err("range read should reject mismatched Content-Range");
+    assert_eq!(err.kind(), GibbloxErrorKind::Io);
+    assert!(err.to_string().contains("content-range mismatch"));
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn http_reader_ignores_cors_safelisted_mode_on_native() {
+    let data = data_blob(4096);
+    let (url, shutdown) =
+        start_server_with_behavior(data.clone(), RangeBehavior::WrongContentRange).await;
+    let config =
+        HttpReaderConfig::with_size(url, 512, data.len() as u64).with_cors_safelisted_mode(true);
+    let source = HttpReader::open(config).await.expect("http source");
+    let source = block_reader(source);
+
+    let mut buf = vec![0u8; 512];
+    let err = source
+        .read_blocks(2, &mut buf, ReadContext::FOREGROUND)
+        .await
+        .expect_err("native reader should still reject mismatched Content-Range");
     assert_eq!(err.kind(), GibbloxErrorKind::Io);
     assert!(err.to_string().contains("content-range mismatch"));
 
