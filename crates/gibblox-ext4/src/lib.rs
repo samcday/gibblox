@@ -10,14 +10,17 @@ use alloc::{
 };
 use async_trait::async_trait;
 use core::{error::Error, fmt};
-use ext4_view::Ext4ReadAsync;
+use ext4plus::Ext4Read;
+use ext4plus::error::Ext4Error as Ext4PlusError;
+use ext4plus::prelude::AsyncIterator;
 use gibblox_core::{
     BlockByteReader, BlockReader, BlockReaderConfigIdentity, ByteReader, GibbloxError,
     GibbloxErrorKind, GibbloxResult, ReadContext, block_identity_string,
 };
+use gobblytes_core::{Filesystem, FilesystemEntryType};
 use tracing::{info, trace};
 
-pub use ext4_view as ext4_view_rs;
+pub use ext4plus as ext4plus_rs;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ext4EntryType {
@@ -25,6 +28,17 @@ pub enum Ext4EntryType {
     Directory,
     Symlink,
     Other,
+}
+
+impl From<Ext4EntryType> for FilesystemEntryType {
+    fn from(value: Ext4EntryType) -> Self {
+        match value {
+            Ext4EntryType::File => Self::File,
+            Ext4EntryType::Directory => Self::Directory,
+            Ext4EntryType::Symlink => Self::Symlink,
+            Ext4EntryType::Other => Self::Other,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,10 +82,10 @@ impl BlockReaderConfigIdentity for Ext4FileReaderConfig {
     }
 }
 
-/// Async-friendly ext4 filesystem wrapper backed by a gibblox `BlockReader`.
+/// Async-first ext4 filesystem wrapper backed by a gibblox `BlockReader`.
 #[derive(Clone)]
 pub struct Ext4Fs {
-    fs: ext4_view_rs::Ext4,
+    fs: ext4plus_rs::Ext4,
     source_identity: String,
 }
 
@@ -104,7 +118,7 @@ impl Ext4Fs {
             source_block_size,
             total_blocks, source_size_bytes, "opening ext4 filesystem"
         );
-        let fs = ext4_view_rs::Ext4::load_async(Box::new(adapter))
+        let fs = ext4plus_rs::Ext4::load(Box::new(adapter))
             .await
             .map_err(map_ext4_err("open ext4 image"))?;
 
@@ -123,14 +137,11 @@ impl Ext4Fs {
         trace!(path = normalized, "reading ext4 file");
         self.fs
             .read(normalized.as_str())
+            .await
             .map_err(map_ext4_err("read ext4 file"))
     }
 
     pub async fn read_range(&self, path: &str, offset: u64, len: usize) -> GibbloxResult<Vec<u8>> {
-        self.read_range_sync(path, offset, len)
-    }
-
-    fn read_range_sync(&self, path: &str, offset: u64, len: usize) -> GibbloxResult<Vec<u8>> {
         if len == 0 {
             return Ok(Vec::new());
         }
@@ -139,35 +150,28 @@ impl Ext4Fs {
         let mut file = self
             .fs
             .open(normalized.as_str())
+            .await
             .map_err(map_ext4_err("open ext4 file"))?;
-        file.seek_to(offset)
-            .map_err(map_ext4_err("seek ext4 file"))?;
-
         let mut out = vec![0u8; len];
-        let mut total = 0usize;
-        while total < out.len() {
-            let read = file
-                .read_bytes(&mut out[total..])
-                .map_err(map_ext4_err("read ext4 file range"))?;
-            if read == 0 {
-                break;
-            }
-            total += read;
-        }
-        out.truncate(total);
+        let read = file
+            .read_bytes_at(&mut out, offset)
+            .await
+            .map_err(map_ext4_err("read ext4 file range"))?;
+        out.truncate(read);
         Ok(out)
     }
 
     pub async fn read_dir(&self, path: &str) -> GibbloxResult<Vec<String>> {
         let normalized = normalize_path(path)?;
-        let entries = self
+        let mut entries = self
             .fs
             .read_dir(normalized.as_str())
+            .await
             .map_err(map_ext4_err("read ext4 directory"))?;
 
         let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(map_ext4_err("read ext4 directory entry"))?;
+        while let Some(next) = entries.next().await {
+            let entry = next.map_err(map_ext4_err("read ext4 directory entry"))?;
             let name = entry.file_name().as_str().map_err(|err| {
                 GibbloxError::with_message(
                     GibbloxErrorKind::InvalidInput,
@@ -179,12 +183,13 @@ impl Ext4Fs {
             }
             names.push(name.to_string());
         }
+
         Ok(names)
     }
 
     pub async fn entry_type(&self, path: &str) -> GibbloxResult<Option<Ext4EntryType>> {
         let normalized = normalize_path(path)?;
-        match self.fs.symlink_metadata(normalized.as_str()) {
+        match self.fs.symlink_metadata(normalized.as_str()).await {
             Ok(metadata) => {
                 let file_type = metadata.file_type();
                 let entry_type = if file_type.is_regular_file() {
@@ -198,7 +203,7 @@ impl Ext4Fs {
                 };
                 Ok(Some(entry_type))
             }
-            Err(ext4_view_rs::Ext4Error::NotFound) => Ok(None),
+            Err(Ext4PlusError::NotFound) => Ok(None),
             Err(err) => Err(map_ext4_err("read ext4 path metadata")(err)),
         }
     }
@@ -208,6 +213,7 @@ impl Ext4Fs {
         let target = self
             .fs
             .read_link(normalized.as_str())
+            .await
             .map_err(map_ext4_err("read ext4 symlink target"))?;
         let target = target.to_str().map_err(|err| {
             GibbloxError::with_message(
@@ -222,7 +228,43 @@ impl Ext4Fs {
         let normalized = normalize_path(path)?;
         self.fs
             .exists(normalized.as_str())
+            .await
             .map_err(map_ext4_err("check ext4 path existence"))
+    }
+}
+
+impl Filesystem for Ext4Fs {
+    type Error = GibbloxError;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>, Self::Error> {
+        Ext4Fs::read_all(self, path).await
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, Self::Error> {
+        Ext4Fs::read_range(self, path, offset, len).await
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>, Self::Error> {
+        Ext4Fs::read_dir(self, path).await
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>, Self::Error> {
+        Ext4Fs::entry_type(self, path)
+            .await
+            .map(|entry_type| entry_type.map(FilesystemEntryType::from))
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String, Self::Error> {
+        Ext4Fs::read_link(self, path).await
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool, Self::Error> {
+        Ext4Fs::exists(self, path).await
     }
 }
 
@@ -231,7 +273,7 @@ pub struct Ext4FileReader {
     block_size: u32,
     file_size_bytes: u64,
     file_path: String,
-    source: Arc<dyn BlockReader>,
+    fs: Ext4Fs,
     config: Ext4FileReaderConfig,
 }
 
@@ -253,26 +295,32 @@ impl Ext4FileReader {
         info!(path = %config.path, block_size = config.block_size, "constructing ext4-backed reader");
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
-        let fs = Ext4Fs::open(Arc::clone(&source)).await?;
+        let fs = Ext4Fs::open(source).await?;
         let source_identity = config
             .source_identity
             .clone()
             .unwrap_or_else(|| fs.source_identity().to_string());
         let config = config.with_source_identity(source_identity);
         let file_path = config.path.clone();
-        let file_size_bytes = fs
+        let metadata = fs
             .fs
-            .open(file_path.as_str())
-            .map_err(map_ext4_err("open ext4 file"))?
-            .metadata()
-            .len();
+            .metadata(file_path.as_str())
+            .await
+            .map_err(map_ext4_err("read ext4 file metadata"))?;
+        if !metadata.file_type().is_regular_file() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!("ext4 path is not a regular file: {file_path}"),
+            ));
+        }
+        let file_size_bytes = metadata.len();
 
         info!(path = %file_path, file_size_bytes, "resolved file from ext4");
         Ok(Self {
             block_size: config.block_size,
             file_size_bytes,
             file_path,
-            source,
+            fs,
             config,
         })
     }
@@ -310,8 +358,10 @@ impl ByteReader for Ext4FileReader {
         }
 
         let read_len = ((buf.len() as u64).min(self.file_size_bytes - offset)) as usize;
-        let fs = pollster::block_on(Ext4Fs::open(Arc::clone(&self.source)))?;
-        let data = fs.read_range_sync(self.file_path.as_str(), offset, read_len)?;
+        let data = self
+            .fs
+            .read_range(self.file_path.as_str(), offset, read_len)
+            .await?;
         if data.len() < read_len {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::Io,
@@ -357,8 +407,8 @@ struct AsyncBlockAdapter {
     size_bytes: u64,
 }
 
-#[async_trait(?Send)]
-impl Ext4ReadAsync for AsyncBlockAdapter {
+#[async_trait]
+impl Ext4Read for AsyncBlockAdapter {
     async fn read(
         &self,
         start_byte: u64,
@@ -429,13 +479,15 @@ fn validate_block_size(block_size: u32) -> GibbloxResult<()> {
     Ok(())
 }
 
-fn map_ext4_err(op: &'static str) -> impl FnOnce(ext4_view_rs::Ext4Error) -> GibbloxError {
+fn map_ext4_err(op: &'static str) -> impl FnOnce(Ext4PlusError) -> GibbloxError {
     move |err| {
         let kind = match &err {
-            ext4_view_rs::Ext4Error::Io(_) => GibbloxErrorKind::Io,
-            ext4_view_rs::Ext4Error::Incompatible(_) => GibbloxErrorKind::Unsupported,
-            ext4_view_rs::Ext4Error::Corrupt(_) => GibbloxErrorKind::InvalidInput,
-            ext4_view_rs::Ext4Error::FileTooLarge => GibbloxErrorKind::OutOfRange,
+            Ext4PlusError::Io(_) => GibbloxErrorKind::Io,
+            Ext4PlusError::Incompatible(_) | Ext4PlusError::Encrypted => {
+                GibbloxErrorKind::Unsupported
+            }
+            Ext4PlusError::Corrupt(_) => GibbloxErrorKind::InvalidInput,
+            Ext4PlusError::FileTooLarge => GibbloxErrorKind::OutOfRange,
             _ => GibbloxErrorKind::InvalidInput,
         };
         GibbloxError::with_message(kind, format!("{op}: {err}"))
