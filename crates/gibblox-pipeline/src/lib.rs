@@ -400,6 +400,7 @@ fn write_pipeline_identity(source: &PipelineSource, out: &mut dyn fmt::Write) ->
         PipelineSource::Http(source) => {
             out.write_str("http{")?;
             write_string_field(out, "url", source.http.as_str())?;
+            write_bool_field(out, "cors_safelisted_mode", source.cors_safelisted_mode)?;
             out.write_str("}")
         }
         PipelineSource::File(source) => {
@@ -474,6 +475,10 @@ fn write_opt_u32_field(out: &mut dyn fmt::Write, key: &str, value: Option<u32>) 
             out.write_str("=none;")
         }
     }
+}
+
+fn write_bool_field(out: &mut dyn fmt::Write, key: &str, value: bool) -> fmt::Result {
+    write!(out, "{key}={value};")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1016,6 +1021,29 @@ gpt:
 
         assert_ne!(pipeline_identity_string(&a), pipeline_identity_string(&b));
         assert_ne!(pipeline_identity_id(&a), pipeline_identity_id(&b));
+    }
+
+    #[test]
+    fn identity_changes_when_cors_safelisted_mode_changes() {
+        let strict = PipelineSource::Http(PipelineSourceHttpSource {
+            http: String::from("https://cdn.example.invalid/rootfs.img"),
+            cors_safelisted_mode: false,
+            content: Some(sample_content()),
+        });
+        let safelisted = PipelineSource::Http(PipelineSourceHttpSource {
+            http: String::from("https://cdn.example.invalid/rootfs.img"),
+            cors_safelisted_mode: true,
+            content: Some(sample_content()),
+        });
+
+        assert_ne!(
+            pipeline_identity_string(&strict),
+            pipeline_identity_string(&safelisted)
+        );
+        assert_ne!(
+            pipeline_identity_id(&strict),
+            pipeline_identity_id(&safelisted)
+        );
     }
 
     #[test]
