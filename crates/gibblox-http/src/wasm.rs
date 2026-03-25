@@ -81,6 +81,10 @@ impl Client {
         url: &Url,
         cors_safelisted_mode: bool,
     ) -> Result<u64, HttpError> {
+        if cors_safelisted_mode {
+            return self.probe_size_cors_safelisted(url).await;
+        }
+
         let priority_header_enabled = self.priority_header_enabled() && !cors_safelisted_mode;
         if priority_header_enabled {
             match self.probe_size_once(url, true).await {
@@ -110,6 +114,57 @@ impl Client {
         }
 
         self.probe_size_once(url, false).await
+    }
+
+    async fn probe_size_cors_safelisted(&self, url: &Url) -> Result<u64, HttpError> {
+        let head_start = now_millis();
+        tracing::trace!(%url, "http probe cors-safelisted HEAD");
+        match self
+            .send_request(url, None, "HEAD", ReadContext::FOREGROUND, false)
+            .await
+        {
+            Ok(resp) if resp.ok() => {
+                if let Some(len) = parse_content_length_from_headers(&resp.headers()) {
+                    tracing::debug!(
+                        %url,
+                        status = resp.status(),
+                        size_bytes = len,
+                        elapsed_ms = elapsed_millis_since(head_start),
+                        "http probe response completed"
+                    );
+                    return Ok(len);
+                }
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!(
+                    %url,
+                    error = %err,
+                    "http probe cors-safelisted HEAD failed; falling back to GET"
+                );
+            }
+        }
+
+        let get_start = now_millis();
+        tracing::trace!(%url, "http probe cors-safelisted GET");
+        let resp = self
+            .send_request(url, None, "GET", ReadContext::FOREGROUND, false)
+            .await
+            .map_err(|err| HttpError::Msg(format!("probe GET: {err}")))?;
+        if resp.ok() {
+            if let Some(len) = parse_content_length_from_headers(&resp.headers()) {
+                tracing::debug!(
+                    %url,
+                    status = resp.status(),
+                    size_bytes = len,
+                    elapsed_ms = elapsed_millis_since(get_start),
+                    "http probe response completed"
+                );
+                return Ok(len);
+            }
+        }
+
+        Err(HttpError::Msg("unable to determine content length".into()))
     }
 
     async fn probe_size_once(
@@ -145,18 +200,16 @@ impl Client {
                 return Ok(len);
             }
         }
-        if resp.ok() {
-            if let Ok(Some(val)) = headers.get(CONTENT_LENGTH.as_str()) {
-                if let Ok(len) = val.parse::<u64>() {
-                    tracing::debug!(
-                        %url,
-                        status = status,
-                        size_bytes = len,
-                        elapsed_ms = elapsed_millis_since(start),
-                        "http probe response completed"
-                    );
-                    return Ok(len);
-                }
+        if resp.ok() && status != PARTIAL_CONTENT_STATUS {
+            if let Some(len) = parse_content_length_from_headers(&headers) {
+                tracing::debug!(
+                    %url,
+                    status = status,
+                    size_bytes = len,
+                    elapsed_ms = elapsed_millis_since(start),
+                    "http probe response completed"
+                );
+                return Ok(len);
             }
         }
         // Final fallback: HEAD (best effort)
@@ -173,17 +226,15 @@ impl Client {
             .map_err(|err| HttpError::Msg(format!("probe HEAD: {err}")))?;
         if resp.ok() {
             let status = resp.status();
-            if let Ok(Some(val)) = resp.headers().get(CONTENT_LENGTH.as_str()) {
-                if let Ok(len) = val.parse::<u64>() {
-                    tracing::debug!(
-                        %url,
-                        status = status,
-                        size_bytes = len,
-                        elapsed_ms = elapsed_millis_since(head_start),
-                        "http probe response completed"
-                    );
-                    return Ok(len);
-                }
+            if let Some(len) = parse_content_length_from_headers(&resp.headers()) {
+                tracing::debug!(
+                    %url,
+                    status = status,
+                    size_bytes = len,
+                    elapsed_ms = elapsed_millis_since(head_start),
+                    "http probe response completed"
+                );
+                return Ok(len);
             }
         }
         Err(HttpError::Msg("unable to determine content length".into()))
@@ -502,6 +553,14 @@ fn fetch_priority_value(ctx: ReadContext) -> &'static str {
 
 fn parse_content_range_total(hdr: &str) -> Option<u64> {
     parse_content_range(hdr).and_then(|(_, _, total)| total)
+}
+
+fn parse_content_length_from_headers(headers: &Headers) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH.as_str())
+        .ok()
+        .flatten()
+        .and_then(|val| val.parse::<u64>().ok())
 }
 
 fn parse_content_range(hdr: &str) -> Option<(u64, u64, Option<u64>)> {
