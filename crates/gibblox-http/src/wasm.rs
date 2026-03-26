@@ -1,20 +1,16 @@
 use crate::HttpError;
 use futures_util::FutureExt;
-use gibblox_core::{GibbloxError, ReadContext, ReadPriority};
+use gibblox_core::{GibbloxError, ReadContext};
 use http::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
-use js_sys::{Promise, Reflect, Uint8Array};
+use js_sys::{Promise, Uint8Array};
 use std::{
     future::Future,
     ops::RangeInclusive,
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
     task::{Context, Poll},
 };
 use url::Url;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, RequestMode, Response, WorkerGlobalScope};
 
@@ -65,15 +61,11 @@ impl SendResponse {
 }
 
 #[derive(Clone)]
-pub struct Client {
-    priority_header_enabled: Arc<AtomicBool>,
-}
+pub struct Client;
 
 impl Client {
     pub fn new() -> Result<Self, GibbloxError> {
-        Ok(Self {
-            priority_header_enabled: Arc::new(AtomicBool::new(true)),
-        })
+        Ok(Self)
     }
 
     pub async fn probe_size(
@@ -85,44 +77,13 @@ impl Client {
             return self.probe_size_cors_safelisted(url).await;
         }
 
-        let priority_header_enabled = self.priority_header_enabled() && !cors_safelisted_mode;
-        if priority_header_enabled {
-            match self.probe_size_once(url, true).await {
-                Ok(size_bytes) => return Ok(size_bytes),
-                Err(priority_err) => {
-                    tracing::warn!(
-                        %url,
-                        error = %priority_err,
-                        "http probe with Priority header failed, retrying without Priority header"
-                    );
-                    self.disable_priority_header();
-                    let size_bytes = self
-                        .probe_size_once(url, false)
-                        .await
-                        .map_err(|range_err| {
-                            HttpError::Msg(format!(
-                                "probe failed with Priority header ({priority_err}); fallback without Priority header also failed ({range_err})"
-                            ))
-                        })?;
-                    tracing::warn!(
-                        %url,
-                        "Priority header disabled for this HTTP client after probe downgrade"
-                    );
-                    return Ok(size_bytes);
-                }
-            }
-        }
-
-        self.probe_size_once(url, false).await
+        self.probe_size_once(url).await
     }
 
     async fn probe_size_cors_safelisted(&self, url: &Url) -> Result<u64, HttpError> {
         let head_start = now_millis();
         tracing::trace!(%url, "http probe cors-safelisted HEAD");
-        match self
-            .send_request(url, None, "HEAD", ReadContext::FOREGROUND, false)
-            .await
-        {
+        match self.send_request(url, None, "HEAD").await {
             Ok(resp) if resp.ok() => {
                 if let Some(len) = parse_content_length_from_headers(&resp.headers()) {
                     tracing::debug!(
@@ -148,7 +109,7 @@ impl Client {
         let get_start = now_millis();
         tracing::trace!(%url, "http probe cors-safelisted GET");
         let resp = self
-            .send_request(url, None, "GET", ReadContext::FOREGROUND, false)
+            .send_request(url, None, "GET")
             .await
             .map_err(|err| HttpError::Msg(format!("probe GET: {err}")))?;
         if resp.ok() {
@@ -167,22 +128,12 @@ impl Client {
         Err(HttpError::Msg("unable to determine content length".into()))
     }
 
-    async fn probe_size_once(
-        &self,
-        url: &Url,
-        use_priority_header: bool,
-    ) -> Result<u64, HttpError> {
+    async fn probe_size_once(&self, url: &Url) -> Result<u64, HttpError> {
         // Prefer a ranged GET to coax Content-Range, fall back to HEAD/Content-Length.
         tracing::trace!(%url, "http probe range");
         let start = now_millis();
         let resp = self
-            .send_request(
-                url,
-                Some("bytes=0-0"),
-                "GET",
-                ReadContext::FOREGROUND,
-                use_priority_header,
-            )
+            .send_request(url, Some("bytes=0-0"), "GET")
             .await
             .map_err(|err| HttpError::Msg(format!("probe request: {err}")))?;
         let status = resp.status();
@@ -215,13 +166,7 @@ impl Client {
         // Final fallback: HEAD (best effort)
         let head_start = now_millis();
         let resp = self
-            .send_request(
-                url,
-                None,
-                "HEAD",
-                ReadContext::FOREGROUND,
-                use_priority_header,
-            )
+            .send_request(url, None, "HEAD")
             .await
             .map_err(|err| HttpError::Msg(format!("probe HEAD: {err}")))?;
         if resp.ok() {
@@ -245,10 +190,9 @@ impl Client {
         url: &Url,
         range: RangeInclusive<u64>,
         buf: &mut [u8],
-        ctx: ReadContext,
+        _ctx: ReadContext,
         cors_safelisted_mode: bool,
     ) -> Result<usize, HttpError> {
-        let use_priority_header = self.priority_header_enabled() && !cors_safelisted_mode;
         let start = *range.start();
         let end = *range.end();
         let expected_len = range_len(start, end)?;
@@ -257,10 +201,7 @@ impl Client {
 
         for attempt in 1..=READ_RANGE_MAX_ATTEMPTS {
             let attempt_start = now_millis();
-            let resp = match self
-                .send_request(url, Some(&header), "GET", ctx, use_priority_header)
-                .await
-            {
+            let resp = match self.send_request(url, Some(&header), "GET").await {
                 Ok(resp) => resp,
                 Err(err) => {
                     last_err = HttpError::Msg(format!("GET: {err}"));
@@ -420,10 +361,8 @@ impl Client {
         url: &Url,
         range: Option<&str>,
         method: &str,
-        ctx: ReadContext,
-        use_priority_header: bool,
     ) -> Result<SendResponse, HttpError> {
-        let promise = build_request_promise(url, range, method, ctx, use_priority_header)?;
+        let promise = build_request_promise(url, range, method)?;
         let resp = SendJsFuture::from(promise)
             .await
             .map_err(|err| HttpError::Msg(format!("fetch await: {err:?}")))?;
@@ -431,14 +370,6 @@ impl Client {
             .dyn_into()
             .map_err(|err| HttpError::Msg(format!("fetch dyn_into Response: {err:?}")))?;
         Ok(SendResponse(resp))
-    }
-
-    fn priority_header_enabled(&self) -> bool {
-        self.priority_header_enabled.load(Ordering::Relaxed)
-    }
-
-    fn disable_priority_header(&self) {
-        self.priority_header_enabled.store(false, Ordering::Relaxed);
     }
 }
 
@@ -459,8 +390,6 @@ fn build_request_promise(
     url: &Url,
     range: Option<&str>,
     method: &str,
-    ctx: ReadContext,
-    use_priority_header: bool,
 ) -> Result<Promise, HttpError> {
     let init = RequestInit::new();
     init.set_method(method);
@@ -471,17 +400,7 @@ fn build_request_promise(
             .append(RANGE.as_str(), range)
             .map_err(|err| HttpError::Msg(format!("set range: {err:?}")))?;
     }
-    if use_priority_header {
-        headers
-            .append("Priority", priority_header_value(ctx))
-            .map_err(|err| HttpError::Msg(format!("set priority: {err:?}")))?;
-    }
     init.set_headers(&headers);
-    let _ = Reflect::set(
-        init.as_ref(),
-        &JsValue::from_str("priority"),
-        &JsValue::from_str(fetch_priority_value(ctx)),
-    );
     let request = Request::new_with_str_and_init(url.as_str(), &init)
         .map_err(|err| HttpError::Msg(format!("build request: {err:?}")))?;
     if let Some(window) = web_sys::window() {
@@ -491,14 +410,6 @@ fn build_request_promise(
         return Ok(worker.fetch_with_request(&request));
     }
     Err(HttpError::Msg("no fetch-capable web global scope".into()))
-}
-
-fn priority_header_value(ctx: ReadContext) -> &'static str {
-    match ctx.priority {
-        ReadPriority::High => "u=0, i",
-        ReadPriority::Medium => "u=3",
-        ReadPriority::Low => "u=7",
-    }
 }
 
 fn range_len(start: u64, end: u64) -> Result<usize, HttpError> {
@@ -566,14 +477,6 @@ fn validate_range_response(
     }
 
     Ok(())
-}
-
-fn fetch_priority_value(ctx: ReadContext) -> &'static str {
-    match ctx.priority {
-        ReadPriority::High => "high",
-        ReadPriority::Medium => "auto",
-        ReadPriority::Low => "low",
-    }
 }
 
 fn parse_content_range_total(hdr: &str) -> Option<u64> {
