@@ -25,7 +25,6 @@ wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "Cache",
     "CacheStorage",
-    "Headers",
     "Request",
     "RequestInit",
     "RequestMode",

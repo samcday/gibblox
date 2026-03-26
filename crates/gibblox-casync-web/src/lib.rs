@@ -3,7 +3,7 @@ mod wasm {
     use async_trait::async_trait;
     use flate2::read::GzDecoder;
     use gibblox_casync::{CasyncChunkId, CasyncChunkStore, CasyncIndexSource};
-    use gibblox_core::{GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext, ReadPriority};
+    use gibblox_core::{GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
     use js_sys::{Promise, Uint8Array};
     use ruzstd::decoding::StreamingDecoder;
     use std::{
@@ -17,7 +17,7 @@ mod wasm {
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{
-        Cache, CacheStorage, Headers, Request, RequestInit, RequestMode, Response,
+        Cache, CacheStorage, Request, RequestInit, RequestMode, Response,
         WorkerGlobalScope,
     };
 
@@ -386,16 +386,10 @@ mod wasm {
         ))
     }
 
-    fn build_request(url: &Url, ctx: ReadContext) -> GibbloxResult<Request> {
+    fn build_request(url: &Url, _ctx: ReadContext) -> GibbloxResult<Request> {
         let init = RequestInit::new();
         init.set_method("GET");
         init.set_mode(RequestMode::Cors);
-
-        let headers = Headers::new().map_err(js_io_with("Headers::new"))?;
-        headers
-            .append("Priority", priority_header_value(ctx))
-            .map_err(js_io_with("set Priority header"))?;
-        init.set_headers(&headers);
 
         Request::new_with_str_and_init(url.as_str(), &init).map_err(js_io_with("build Request"))
     }
@@ -508,14 +502,6 @@ mod wasm {
             ));
         }
         Ok(())
-    }
-
-    fn priority_header_value(ctx: ReadContext) -> &'static str {
-        match ctx.priority {
-            ReadPriority::High => "u=0, i",
-            ReadPriority::Medium => "u=3",
-            ReadPriority::Low => "u=7",
-        }
     }
 
     fn js_io_with(op: &'static str) -> impl FnOnce(JsValue) -> GibbloxError {
