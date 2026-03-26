@@ -325,6 +325,7 @@ impl Client {
             if let Err(message) = validate_range_response(
                 status,
                 content_range.as_deref(),
+                content_length.as_deref(),
                 start,
                 end,
                 cors_safelisted_mode,
@@ -516,27 +517,51 @@ fn header_value(headers: &Headers, name: &str) -> Result<Option<String>, HttpErr
 fn validate_range_response(
     status: u16,
     content_range: Option<&str>,
+    content_length: Option<&str>,
     expected_start: u64,
     expected_end: u64,
     cors_safelisted_mode: bool,
 ) -> Result<(), String> {
-    if status != PARTIAL_CONTENT_STATUS {
-        return Err(format!(
-            "GET status {status} (expected {PARTIAL_CONTENT_STATUS} Partial Content)"
-        ));
-    }
+    if status == PARTIAL_CONTENT_STATUS {
+        if cors_safelisted_mode {
+            return Ok(());
+        }
 
-    if cors_safelisted_mode {
+        let content_range =
+            content_range.ok_or_else(|| "missing Content-Range on partial response".to_string())?;
+        let (start, end, _) = parse_content_range(content_range)
+            .ok_or_else(|| format!("invalid Content-Range header '{content_range}'"))?;
+        if start != expected_start || end != expected_end {
+            return Err(format!(
+                "content-range mismatch: got bytes {start}-{end}, expected bytes {expected_start}-{expected_end}"
+            ));
+        }
+
         return Ok(());
     }
 
-    let content_range =
-        content_range.ok_or_else(|| "missing Content-Range on partial response".to_string())?;
-    let (start, end, _) = parse_content_range(content_range)
-        .ok_or_else(|| format!("invalid Content-Range header '{content_range}'"))?;
-    if start != expected_start || end != expected_end {
+    let expected_len = expected_end
+        .checked_sub(expected_start)
+        .and_then(|delta| delta.checked_add(1))
+        .ok_or_else(|| "expected range length overflow".to_string())?;
+    if status == 200 && expected_start == 0 {
+        if let Some(content_length) = content_length {
+            let parsed = content_length.parse::<u64>().map_err(|err| {
+                format!("invalid Content-Length header '{content_length}': {err}")
+            })?;
+            if parsed == expected_len {
+                return Ok(());
+            }
+            return Err(format!(
+                "GET status 200 full-body fallback length mismatch: got Content-Length {parsed}, expected {expected_len}"
+            ));
+        }
+        return Err("GET status 200 full-body fallback missing Content-Length header".to_string());
+    }
+
+    if status != PARTIAL_CONTENT_STATUS {
         return Err(format!(
-            "content-range mismatch: got bytes {start}-{end}, expected bytes {expected_start}-{expected_end}"
+            "GET status {status} (expected {PARTIAL_CONTENT_STATUS} Partial Content)"
         ));
     }
 
@@ -576,4 +601,34 @@ fn parse_content_range(hdr: &str) -> Option<(u64, u64, Option<u64>)> {
         Some(total.parse::<u64>().ok()?)
     };
     Some((start, end, total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_range_response;
+
+    #[test]
+    fn accepts_partial_content_with_matching_content_range() {
+        let result =
+            validate_range_response(206, Some("bytes 0-399/400"), Some("400"), 0, 399, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn accepts_full_body_for_full_range_from_zero() {
+        let result = validate_range_response(200, None, Some("400"), 0, 399, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_full_body_when_length_mismatches() {
+        let result = validate_range_response(200, None, Some("399"), 0, 399, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_full_body_for_non_zero_start() {
+        let result = validate_range_response(200, None, Some("100"), 300, 399, false);
+        assert!(result.is_err());
+    }
 }
