@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1-rc.19"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.87"
 license = "GPL-3.0-only"
@@ -40,30 +40,30 @@ nursery = { level = "warn", priority = -1 }
 missing_const_for_fn = "allow"
 
 [workspace.dependencies]
-gibblox-cli = { version = "0.0.1-rc.19", path = "cli" }
-gibblox-schema = { version = "0.0.1-rc.19", path = "crates/gibblox-schema" }
-gobblytes-core = { version = "0.0.1-rc.19", path = "crates/gobblytes-core" }
-gobblytes-erofs = { version = "0.0.1-rc.19", path = "crates/gobblytes-erofs" }
-gobblytes-fat = { version = "0.0.1-rc.19", path = "crates/gobblytes-fat" }
-gibblox-core = { version = "0.0.1-rc.19", path = "crates/gibblox-core" }
-gibblox-android-sparse = { version = "0.0.1-rc.19", path = "crates/gibblox-android-sparse" }
-gibblox-zip = { version = "0.0.1-rc.19", path = "crates/gibblox-zip" }
-gibblox-xz = { version = "0.0.1-rc.19", path = "crates/gibblox-xz" }
-gibblox-casync = { version = "0.0.1-rc.19", path = "crates/gibblox-casync" }
-gibblox-casync-std = { version = "0.0.1-rc.19", path = "crates/gibblox-casync-std" }
-gibblox-casync-web = { version = "0.0.1-rc.19", path = "crates/gibblox-casync-web" }
-gibblox-iso9660 = { version = "0.0.1-rc.19", path = "crates/gibblox-iso9660" }
-gibblox-mbr = { version = "0.0.1-rc.19", path = "crates/gibblox-mbr" }
-gibblox-ext4 = { version = "0.0.1-rc.19", path = "crates/gibblox-ext4" }
-gibblox-file = { version = "0.0.1-rc.19", path = "crates/gibblox-file" }
-gibblox-web-file = { version = "0.0.1-rc.19", path = "crates/gibblox-web-file" }
-gibblox-http = { version = "0.0.1-rc.19", path = "crates/gibblox-http" }
-gibblox-cache = { version = "0.0.1-rc.19", path = "crates/gibblox-cache", default-features = false }
-gibblox-cache-store-std = { version = "0.0.1-rc.19", path = "crates/gibblox-cache-store-std" }
-gibblox-cache-store-opfs = { version = "0.0.1-rc.19", path = "crates/gibblox-cache-store-opfs" }
-gibblox-blockreader-messageport = { version = "0.0.1-rc.19", path = "crates/gibblox-blockreader-messageport" }
-gibblox-web-worker = { version = "0.0.1-rc.19", path = "crates/gibblox-web-worker" }
-gibblox-pipeline = { version = "0.0.1-rc.19", path = "crates/gibblox-pipeline" }
+gibblox-cli = { version = "0.0.1", path = "cli" }
+gibblox-schema = { version = "0.0.1", path = "crates/gibblox-schema" }
+gobblytes-core = { version = "0.0.1", path = "crates/gobblytes-core" }
+gobblytes-erofs = { version = "0.0.1", path = "crates/gobblytes-erofs" }
+gobblytes-fat = { version = "0.0.1", path = "crates/gobblytes-fat" }
+gibblox-core = { version = "0.0.1", path = "crates/gibblox-core" }
+gibblox-android-sparse = { version = "0.0.1", path = "crates/gibblox-android-sparse" }
+gibblox-zip = { version = "0.0.1", path = "crates/gibblox-zip" }
+gibblox-xz = { version = "0.0.1", path = "crates/gibblox-xz" }
+gibblox-casync = { version = "0.0.1", path = "crates/gibblox-casync" }
+gibblox-casync-std = { version = "0.0.1", path = "crates/gibblox-casync-std" }
+gibblox-casync-web = { version = "0.0.1", path = "crates/gibblox-casync-web" }
+gibblox-iso9660 = { version = "0.0.1", path = "crates/gibblox-iso9660" }
+gibblox-mbr = { version = "0.0.1", path = "crates/gibblox-mbr" }
+gibblox-ext4 = { version = "0.0.1", path = "crates/gibblox-ext4" }
+gibblox-file = { version = "0.0.1", path = "crates/gibblox-file" }
+gibblox-web-file = { version = "0.0.1", path = "crates/gibblox-web-file" }
+gibblox-http = { version = "0.0.1", path = "crates/gibblox-http" }
+gibblox-cache = { version = "0.0.1", path = "crates/gibblox-cache", default-features = false }
+gibblox-cache-store-std = { version = "0.0.1", path = "crates/gibblox-cache-store-std" }
+gibblox-cache-store-opfs = { version = "0.0.1", path = "crates/gibblox-cache-store-opfs" }
+gibblox-blockreader-messageport = { version = "0.0.1", path = "crates/gibblox-blockreader-messageport" }
+gibblox-web-worker = { version = "0.0.1", path = "crates/gibblox-web-worker" }
+gibblox-pipeline = { version = "0.0.1", path = "crates/gibblox-pipeline" }
 async-trait = "0.1.89"
 bitflags = "2"
 bytes = { version = "1", default-features = false }
