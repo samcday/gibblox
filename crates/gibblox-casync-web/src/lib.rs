@@ -17,8 +17,7 @@ mod wasm {
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{
-        Cache, CacheStorage, Request, RequestInit, RequestMode, Response,
-        WorkerGlobalScope,
+        Cache, CacheStorage, Request, RequestInit, RequestMode, Response, WorkerGlobalScope,
     };
 
     const CHUNK_SIZE_LIMIT_MIN: usize = 1;
