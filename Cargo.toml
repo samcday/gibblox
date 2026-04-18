@@ -57,7 +57,7 @@ gibblox-mbr = { version = "0.0.1", path = "crates/gibblox-mbr" }
 gibblox-ext4 = { version = "0.0.1", path = "crates/gibblox-ext4" }
 gibblox-file = { version = "0.0.1", path = "crates/gibblox-file" }
 gibblox-web-file = { version = "0.0.1", path = "crates/gibblox-web-file" }
-gibblox-http = { version = "0.0.1", path = "crates/gibblox-http" }
+gibblox-http = { version = "0.0.1", path = "crates/gibblox-http", default-features = false }
 gibblox-cache = { version = "0.0.1", path = "crates/gibblox-cache", default-features = false }
 gibblox-cache-store-std = { version = "0.0.1", path = "crates/gibblox-cache-store-std" }
 gibblox-cache-store-opfs = { version = "0.0.1", path = "crates/gibblox-cache-store-opfs" }
