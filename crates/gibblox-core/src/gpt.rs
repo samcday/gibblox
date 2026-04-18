@@ -160,12 +160,6 @@ impl GptBlockReader {
         }
 
         let upstream_total_blocks = source.total_blocks().await?;
-        if upstream_total_blocks < 2 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "GPT image requires at least two logical blocks",
-            ));
-        }
         let source_size_bytes = upstream_total_blocks
             .checked_mul(upstream_block_size as u64)
             .ok_or_else(|| {
@@ -192,7 +186,7 @@ impl GptBlockReader {
             )
         };
         let source_block_size = effective_lba_size;
-        let source_total_blocks = source_size_bytes / (effective_lba_size as u64);
+        let source_total_blocks = source.total_blocks().await?;
         if source_total_blocks < 2 {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -1199,6 +1193,29 @@ mod tests {
         .expect("auto-probe should locate GPT at 512-byte LBAs");
 
         assert_eq!(gpt.partition_partuuid(), TEST_PART1_UUID);
+        let mut first = vec![0u8; 1024];
+        block_on(gpt.read_blocks(0, &mut first, ReadContext::FOREGROUND)).expect("read first");
+        assert_eq!(&first[..], &partition_one_data[..1024]);
+    }
+
+    #[test]
+    fn gpt_reader_accepts_single_upstream_block_with_explicit_source_lba_size() {
+        let (disk, partition_one_data) = build_test_gpt_disk();
+        let disk_size = disk.len() as u64;
+        let inner = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+        let upstream = block_on(WindowBlockReader::new(inner, 0, disk_size, 131072))
+            .expect("create single-block upstream view");
+
+        let config =
+            GptBlockReaderConfig::new(GptPartitionSelector::part_uuid(TEST_PART1_UUID), 1024)
+                .with_source_lba_size(512);
+
+        let gpt = block_on(GptBlockReader::open_with_config(upstream, config))
+            .expect("single-upstream-block source must not be rejected before LBA remap");
+
         let mut first = vec![0u8; 1024];
         block_on(gpt.read_blocks(0, &mut first, ReadContext::FOREGROUND)).expect("read first");
         assert_eq!(&first[..], &partition_one_data[..1024]);
