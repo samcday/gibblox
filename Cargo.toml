@@ -32,7 +32,7 @@ members = [
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.88"
-license = "GPL-3.0-only"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/samcday/gibblox"
 
 [workspace.lints.clippy]
