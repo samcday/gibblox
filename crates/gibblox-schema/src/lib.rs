@@ -90,31 +90,26 @@ impl fmt::Display for PipelineHintsValidationError {
             Self::EmptyIdentity => write!(f, "pipeline hint entry has an empty pipeline_identity"),
             Self::DuplicateIdentity { pipeline_identity } => write!(
                 f,
-                "duplicate pipeline hint identity '{}' is not allowed",
-                pipeline_identity
+                "duplicate pipeline hint identity '{pipeline_identity}' is not allowed"
             ),
             Self::UnsortedIdentity {
                 previous_identity,
                 pipeline_identity,
             } => write!(
                 f,
-                "pipeline hint identities must be sorted; '{}' appears after '{}'",
-                pipeline_identity, previous_identity
+                "pipeline hint identities must be sorted; '{pipeline_identity}' appears after '{previous_identity}'"
             ),
             Self::EmptyHints { pipeline_identity } => write!(
                 f,
-                "pipeline hint entry '{}' must contain at least one hint",
-                pipeline_identity
+                "pipeline hint entry '{pipeline_identity}' must contain at least one hint"
             ),
             Self::DuplicateHintTypeAndroidSparseIndex { pipeline_identity } => write!(
                 f,
-                "pipeline hint entry '{}' contains duplicate AndroidSparseIndex hints",
-                pipeline_identity
+                "pipeline hint entry '{pipeline_identity}' contains duplicate AndroidSparseIndex hints"
             ),
             Self::DuplicateHintTypeContentDigest { pipeline_identity } => write!(
                 f,
-                "pipeline hint entry '{}' contains duplicate ContentDigest hints",
-                pipeline_identity
+                "pipeline hint entry '{pipeline_identity}' contains duplicate ContentDigest hints"
             ),
         }
     }

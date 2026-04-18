@@ -179,8 +179,7 @@ where
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 format!(
-                    "declared sparse chunk count {} exceeds maximum {} for available bytes",
-                    total_chunks_u64, max_chunk_headers
+                    "declared sparse chunk count {total_chunks_u64} exceeds maximum {max_chunk_headers} for available bytes"
                 ),
             ));
         }
@@ -510,8 +509,7 @@ where
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 format!(
-                    "sparse index output size mismatch (mapped {}, expected {})",
-                    output_cursor, expanded_size_bytes
+                    "sparse index output size mismatch (mapped {output_cursor}, expected {expanded_size_bytes})"
                 ),
             ));
         }
