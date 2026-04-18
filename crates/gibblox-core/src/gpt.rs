@@ -1265,7 +1265,10 @@ mod tests {
         };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
         let msg = format!("{err}");
-        assert!(msg.contains("512"), "error message should mention 512: {msg}");
+        assert!(
+            msg.contains("512"),
+            "error message should mention 512: {msg}"
+        );
         assert!(
             msg.contains("4096"),
             "error message should mention 4096: {msg}"
