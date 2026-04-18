@@ -207,7 +207,7 @@ where
             apply_path_target(&mut resolved, &link_target)?;
 
             let mut rewritten = resolved.into_iter().collect::<VecDeque<_>>();
-            rewritten.extend(remaining.into_iter());
+            rewritten.extend(remaining);
             remaining = rewritten;
             resolved = Vec::new();
         }
