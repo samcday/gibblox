@@ -1,8 +1,9 @@
 extern crate alloc;
 
-use alloc::{boxed::Box, format, string::String, sync::Arc, vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use core::fmt;
+use core::fmt::Write as _;
 use tracing::{info, trace};
 
 use crate::{
@@ -51,6 +52,15 @@ pub struct GptBlockReaderConfig {
     pub selector: GptPartitionSelector,
     pub block_size: u32,
     pub source_identity: Option<String>,
+    /// LBA size, in bytes, to address the upstream source as when locating the GPT.
+    ///
+    /// `None` enables auto-probe: the reader tries the upstream's reported
+    /// `block_size()`, then 512, then 4096, and uses the first one whose LBA1
+    /// contains a valid `EFI PART` signature. Set this explicitly when the
+    /// upstream source reports a `block_size()` that does not match the LBA
+    /// size the contained image was formatted with (e.g. a 4096-byte-chunked
+    /// Android sparse image whose contained disk uses 512-byte sectors).
+    pub source_lba_size: Option<u32>,
 }
 
 impl GptBlockReaderConfig {
@@ -59,6 +69,7 @@ impl GptBlockReaderConfig {
             selector,
             block_size,
             source_identity: None,
+            source_lba_size: None,
         }
     }
 
@@ -67,11 +78,24 @@ impl GptBlockReaderConfig {
         self
     }
 
+    pub fn with_source_lba_size(mut self, source_lba_size: u32) -> Self {
+        self.source_lba_size = Some(source_lba_size);
+        self
+    }
+
     fn validate(&self) -> GibbloxResult<()> {
         if self.block_size == 0 || !self.block_size.is_power_of_two() {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 "block size must be non-zero power of two",
+            ));
+        }
+        if let Some(sz) = self.source_lba_size
+            && (sz == 0 || !sz.is_power_of_two())
+        {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "source_lba_size must be non-zero power of two",
             ));
         }
         Ok(())
@@ -90,7 +114,11 @@ impl BlockReaderConfigIdentity for GptBlockReaderConfig {
             out,
             "):selector={}:block_size={}",
             self.selector, self.block_size
-        )
+        )?;
+        if let Some(sz) = self.source_lba_size {
+            write!(out, ":source_lba_size={sz}")?;
+        }
+        Ok(())
     }
 }
 
@@ -116,35 +144,63 @@ impl GptBlockReader {
         config: GptBlockReaderConfig,
     ) -> GibbloxResult<Self> {
         config.validate()?;
-        info!(selector = %config.selector, block_size = config.block_size, "constructing GPT-backed reader");
+        info!(
+            selector = %config.selector,
+            block_size = config.block_size,
+            source_lba_size = ?config.source_lba_size,
+            "constructing GPT-backed reader"
+        );
 
-        let source_block_size = source.block_size();
-        if source_block_size == 0 || !source_block_size.is_power_of_two() {
+        let upstream_block_size = source.block_size();
+        if upstream_block_size == 0 || !upstream_block_size.is_power_of_two() {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 "source block size must be non-zero power of two",
             ));
         }
 
-        let source_total_blocks = source.total_blocks().await?;
-        if source_total_blocks < 2 {
+        let upstream_total_blocks = source.total_blocks().await?;
+        if upstream_total_blocks < 2 {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 "GPT image requires at least two logical blocks",
             ));
         }
-        let source_size_bytes = source_total_blocks
-            .checked_mul(source_block_size as u64)
+        let source_size_bytes = upstream_total_blocks
+            .checked_mul(upstream_block_size as u64)
             .ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "image size overflow")
             })?;
 
-        let source: Arc<dyn BlockReader> = Arc::new(source);
-        let source_identity = config
+        let upstream: Arc<dyn BlockReader> = Arc::new(source);
+        let upstream_identity = config
             .source_identity
             .clone()
-            .unwrap_or_else(|| crate::block_identity_string(source.as_ref()));
-        let config = config.with_source_identity(source_identity);
+            .unwrap_or_else(|| crate::block_identity_string(upstream.as_ref()));
+
+        let effective_lba_size = if let Some(sz) = config.source_lba_size {
+            sz
+        } else {
+            probe_gpt_source_lba_size(&upstream, source_size_bytes).await?
+        };
+
+        let source: Arc<dyn BlockReader> = if effective_lba_size == upstream_block_size {
+            upstream
+        } else {
+            Arc::new(
+                WindowBlockReader::new(upstream, 0, source_size_bytes, effective_lba_size).await?,
+            )
+        };
+        let source_block_size = effective_lba_size;
+        let source_total_blocks = source_size_bytes / (effective_lba_size as u64);
+        if source_total_blocks < 2 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "GPT image requires at least two logical blocks at the chosen LBA size",
+            ));
+        }
+
+        let config = config.with_source_identity(upstream_identity);
 
         let mut header_block = vec![0u8; source_block_size as usize];
         read_source_blocks_exact(
@@ -381,6 +437,72 @@ impl GptPartitionEntry {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "partition size overflow")
         })
     }
+}
+
+async fn probe_gpt_source_lba_size(
+    source: &Arc<dyn BlockReader>,
+    source_size_bytes: u64,
+) -> GibbloxResult<u32> {
+    let upstream_size = source.block_size();
+    let mut candidates: Vec<u32> = Vec::new();
+    if upstream_size > 0 && upstream_size.is_power_of_two() {
+        candidates.push(upstream_size);
+    }
+    for &cand in &[512u32, 4096] {
+        if !candidates.contains(&cand) {
+            candidates.push(cand);
+        }
+    }
+
+    for &candidate in &candidates {
+        let needed = match (candidate as u64).checked_mul(2) {
+            Some(value) => value,
+            None => continue,
+        };
+        if needed > source_size_bytes {
+            continue;
+        }
+
+        let mut header = vec![0u8; candidate as usize];
+        let probe_result = if candidate == upstream_size {
+            source
+                .read_blocks(1, &mut header, ReadContext::FOREGROUND)
+                .await
+                .map(|_| ())
+        } else {
+            match WindowBlockReader::new(Arc::clone(source), 0, source_size_bytes, candidate).await
+            {
+                Ok(view) => view
+                    .read_blocks(1, &mut header, ReadContext::FOREGROUND)
+                    .await
+                    .map(|_| ()),
+                Err(err) => Err(err),
+            }
+        };
+
+        if probe_result.is_ok() && header.len() >= 8 && &header[..8] == GPT_SIGNATURE {
+            info!(
+                lba_size = candidate,
+                "auto-probed GPT source LBA size from EFI PART signature"
+            );
+            return Ok(candidate);
+        }
+    }
+
+    let mut tried = String::new();
+    for (i, c) in candidates.iter().enumerate() {
+        if i > 0 {
+            tried.push_str(", ");
+        }
+        let _ = write!(tried, "{c}");
+    }
+    Err(GibbloxError::with_message(
+        GibbloxErrorKind::InvalidInput,
+        format!(
+            "GPT header signature not found at LBA1 for any candidate LBA size (tried: {tried}); \
+             set `lba_size:` on the gpt source if your image uses a different sector size"
+        ),
+    ))
 }
 
 async fn read_source_blocks_exact(
@@ -1056,6 +1178,120 @@ mod tests {
             Err(err) => err,
         };
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn gpt_reader_auto_probes_when_upstream_misreports_block_size() {
+        let (disk, partition_one_data) = build_test_gpt_disk();
+        let disk_size = disk.len() as u64;
+        let inner = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+        let upstream = block_on(WindowBlockReader::new(inner, 0, disk_size, 4096))
+            .expect("create misreporting 4096 view");
+
+        let gpt = block_on(GptBlockReader::new(
+            upstream,
+            GptPartitionSelector::part_uuid(TEST_PART1_UUID),
+            1024,
+        ))
+        .expect("auto-probe should locate GPT at 512-byte LBAs");
+
+        assert_eq!(gpt.partition_partuuid(), TEST_PART1_UUID);
+        let mut first = vec![0u8; 1024];
+        block_on(gpt.read_blocks(0, &mut first, ReadContext::FOREGROUND)).expect("read first");
+        assert_eq!(&first[..], &partition_one_data[..1024]);
+    }
+
+    #[test]
+    fn gpt_reader_explicit_source_lba_size_wins() {
+        let (disk, partition_one_data) = build_test_gpt_disk();
+        let disk_size = disk.len() as u64;
+        let inner = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+        let upstream = block_on(WindowBlockReader::new(inner, 0, disk_size, 4096))
+            .expect("create misreporting 4096 view");
+
+        let config =
+            GptBlockReaderConfig::new(GptPartitionSelector::part_uuid(TEST_PART1_UUID), 1024)
+                .with_source_lba_size(512);
+
+        let gpt = block_on(GptBlockReader::open_with_config(upstream, config))
+            .expect("explicit source_lba_size should locate GPT");
+
+        let mut first = vec![0u8; 1024];
+        block_on(gpt.read_blocks(0, &mut first, ReadContext::FOREGROUND)).expect("read first");
+        assert_eq!(&first[..], &partition_one_data[..1024]);
+    }
+
+    #[test]
+    fn gpt_reader_probe_error_lists_candidates() {
+        let mut disk = vec![0u8; TEST_BLOCK_SIZE * TEST_TOTAL_BLOCKS];
+        for (idx, byte) in disk.iter_mut().enumerate() {
+            *byte = (idx % 251) as u8;
+        }
+        let reader = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+
+        let err = match block_on(GptBlockReader::new(
+            reader,
+            GptPartitionSelector::index(0),
+            TEST_BLOCK_SIZE as u32,
+        )) {
+            Ok(_) => panic!("probe with no signature should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+        let msg = format!("{err}");
+        assert!(msg.contains("512"), "error message should mention 512: {msg}");
+        assert!(
+            msg.contains("4096"),
+            "error message should mention 4096: {msg}"
+        );
+        assert!(
+            msg.contains("lba_size"),
+            "error message should mention lba_size knob: {msg}"
+        );
+    }
+
+    #[test]
+    fn gpt_reader_rejects_invalid_explicit_source_lba_size() {
+        let (disk, _) = build_test_gpt_disk();
+        let reader = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+        let config = GptBlockReaderConfig::new(GptPartitionSelector::index(0), 512)
+            .with_source_lba_size(513);
+
+        let err = match block_on(GptBlockReader::open_with_config(reader, config)) {
+            Ok(_) => panic!("non-pow2 source_lba_size should fail validate"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn gpt_reader_config_identity_includes_source_lba_size() {
+        let plain = GptBlockReaderConfig::new(GptPartitionSelector::index(0), 512)
+            .with_source_identity("upstream");
+        let mut s_plain = String::new();
+        plain.write_identity(&mut s_plain).unwrap();
+
+        let with_lba = GptBlockReaderConfig::new(GptPartitionSelector::index(0), 512)
+            .with_source_identity("upstream")
+            .with_source_lba_size(4096);
+        let mut s_with = String::new();
+        with_lba.write_identity(&mut s_with).unwrap();
+
+        assert_ne!(s_plain, s_with);
+        assert!(s_with.contains("source_lba_size=4096"));
+        assert!(!s_plain.contains("source_lba_size"));
     }
 
     #[test]

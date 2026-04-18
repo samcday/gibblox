@@ -62,6 +62,16 @@ pub struct MbrBlockReaderConfig {
     pub selector: MbrPartitionSelector,
     pub block_size: u32,
     pub source_identity: Option<String>,
+    /// LBA size, in bytes, that MBR partition `first_lba` / `sector_count`
+    /// values should be interpreted in.
+    ///
+    /// When `None` (the default), entries are interpreted as 512-byte LBAs —
+    /// the MBR convention and what virtually every legacy MBR-formatted disk
+    /// uses. Set this explicitly when targeting a non-standard layout (for
+    /// example a >2 TiB MBR using 4096-byte LBAs, or an encoded source whose
+    /// reported `block_size()` does not match the contained image's true LBA
+    /// size). A future revision may auto-probe the value.
+    pub source_lba_size: Option<u32>,
 }
 
 impl MbrBlockReaderConfig {
@@ -70,6 +80,7 @@ impl MbrBlockReaderConfig {
             selector,
             block_size,
             source_identity: None,
+            source_lba_size: None,
         }
     }
 
@@ -78,11 +89,24 @@ impl MbrBlockReaderConfig {
         self
     }
 
+    pub fn with_source_lba_size(mut self, source_lba_size: u32) -> Self {
+        self.source_lba_size = Some(source_lba_size);
+        self
+    }
+
     fn validate(&self) -> GibbloxResult<()> {
         if self.block_size == 0 || !self.block_size.is_power_of_two() {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 "block size must be non-zero power of two",
+            ));
+        }
+        if let Some(sz) = self.source_lba_size
+            && (sz == 0 || !sz.is_power_of_two())
+        {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "source_lba_size must be non-zero power of two",
             ));
         }
         Ok(())
@@ -101,7 +125,11 @@ impl BlockReaderConfigIdentity for MbrBlockReaderConfig {
             out,
             "):selector={}:block_size={}",
             self.selector, self.block_size
-        )
+        )?;
+        if let Some(sz) = self.source_lba_size {
+            write!(out, ":source_lba_size={sz}")?;
+        }
+        Ok(())
     }
 }
 
@@ -166,8 +194,10 @@ impl MbrBlockReader {
         let disk_signature = mbr_disk_signature(&header);
 
         let selected = select_partition_entry(&header, &config.selector)?;
+        let effective_lba_size =
+            u64::from(config.source_lba_size.unwrap_or(MBR_SECTOR_SIZE as u32));
         let partition_offset_bytes = u64::from(selected.first_lba)
-            .checked_mul(MBR_SECTOR_SIZE as u64)
+            .checked_mul(effective_lba_size)
             .ok_or_else(|| {
                 GibbloxError::with_message(
                     GibbloxErrorKind::OutOfRange,
@@ -175,7 +205,7 @@ impl MbrBlockReader {
                 )
             })?;
         let partition_size_bytes = u64::from(selected.sector_count)
-            .checked_mul(MBR_SECTOR_SIZE as u64)
+            .checked_mul(effective_lba_size)
             .ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "partition size overflow")
             })?;
@@ -612,6 +642,75 @@ mod tests {
             Err(err) => err,
         };
         assert_eq!(err.kind(), GibbloxErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn mbr_reader_explicit_source_lba_size_addresses_4k_layout() {
+        const LBA_SIZE: usize = 4096;
+        const TOTAL_LBAS: usize = 16;
+        let mut disk = vec![0u8; LBA_SIZE * TOTAL_LBAS];
+
+        disk[MBR_DISK_SIGNATURE_OFFSET..MBR_DISK_SIGNATURE_OFFSET + 4]
+            .copy_from_slice(&TEST_DISK_SIGNATURE.to_le_bytes());
+        disk[MBR_SIGNATURE_OFFSET..MBR_SIGNATURE_OFFSET + 2].copy_from_slice(&MBR_SIGNATURE);
+        write_partition_entry(&mut disk, 0, 0x80, 0x83, 2, 3);
+
+        let partition_data: alloc::vec::Vec<u8> =
+            (0..(LBA_SIZE * 3)).map(|idx| (idx % 251) as u8).collect();
+        let partition_offset = 2 * LBA_SIZE;
+        disk[partition_offset..partition_offset + partition_data.len()]
+            .copy_from_slice(&partition_data);
+
+        let reader = FakeReader {
+            block_size: LBA_SIZE as u32,
+            data: disk,
+        };
+        let config =
+            MbrBlockReaderConfig::new(MbrPartitionSelector::part_uuid(TEST_PART1_UUID), 4096)
+                .with_source_lba_size(LBA_SIZE as u32);
+
+        let mbr = block_on(MbrBlockReader::open_with_config(reader, config))
+            .expect("explicit 4096 source_lba_size should locate partition");
+
+        assert_eq!(mbr.partition_size_bytes(), (LBA_SIZE * 3) as u64);
+        let mut out = vec![0u8; LBA_SIZE];
+        block_on(mbr.read_blocks(0, &mut out, ReadContext::FOREGROUND)).expect("read first lba");
+        assert_eq!(&out[..], &partition_data[..LBA_SIZE]);
+    }
+
+    #[test]
+    fn mbr_reader_rejects_invalid_explicit_source_lba_size() {
+        let (disk, _, _) = build_test_mbr_disk();
+        let reader = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+        let config = MbrBlockReaderConfig::new(MbrPartitionSelector::index(0), 512)
+            .with_source_lba_size(513);
+
+        let err = match block_on(MbrBlockReader::open_with_config(reader, config)) {
+            Ok(_) => panic!("non-pow2 source_lba_size should fail validate"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn mbr_reader_config_identity_includes_source_lba_size() {
+        let plain = MbrBlockReaderConfig::new(MbrPartitionSelector::index(0), 512)
+            .with_source_identity("upstream");
+        let mut s_plain = String::new();
+        plain.write_identity(&mut s_plain).unwrap();
+
+        let with_lba = MbrBlockReaderConfig::new(MbrPartitionSelector::index(0), 512)
+            .with_source_identity("upstream")
+            .with_source_lba_size(4096);
+        let mut s_with = String::new();
+        with_lba.write_identity(&mut s_with).unwrap();
+
+        assert_ne!(s_plain, s_with);
+        assert!(s_with.contains("source_lba_size=4096"));
+        assert!(!s_plain.contains("source_lba_size"));
     }
 
     fn build_test_mbr_disk() -> (

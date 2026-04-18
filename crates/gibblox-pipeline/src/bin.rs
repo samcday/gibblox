@@ -12,8 +12,12 @@ use crate::{
 };
 
 pub const PIPELINE_BIN_MAGIC: [u8; 8] = *b"GBXPIPE0";
-pub const PIPELINE_BIN_FORMAT_VERSION: u16 = 2;
+pub const PIPELINE_BIN_FORMAT_VERSION: u16 = 3;
 pub const PIPELINE_BIN_HEADER_LEN: usize = PIPELINE_BIN_MAGIC.len() + 2;
+
+/// Format versions this build can decode. Newer code adds optional fields and
+/// older payloads deserialize against the older mirror struct, then translate.
+pub const PIPELINE_BIN_SUPPORTED_VERSIONS: &[u16] = &[2, 3];
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum PipelineSourceBin {
@@ -42,6 +46,7 @@ pub enum PipelineSourceBin {
     Mbr {
         partuuid: Option<String>,
         index: Option<u32>,
+        lba_size: Option<u32>,
         source: Box<PipelineSourceBin>,
         content: Option<PipelineSourceContent>,
     },
@@ -49,9 +54,113 @@ pub enum PipelineSourceBin {
         partlabel: Option<String>,
         partuuid: Option<String>,
         index: Option<u32>,
+        lba_size: Option<u32>,
         source: Box<PipelineSourceBin>,
         content: Option<PipelineSourceContent>,
     },
+}
+
+/// Wire-compatible mirror of [`PipelineSourceBin`] for format version 2
+/// (before the `lba_size` field was introduced). Decoded payloads are
+/// translated to the current shape with `lba_size: None`. The `Serialize`
+/// impl exists so tests can synthesize v2 payloads on the fly.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) enum PipelineSourceBinV2 {
+    Casync {
+        index: String,
+        chunk_store: Option<String>,
+        content: Option<PipelineSourceContent>,
+    },
+    Http {
+        url: String,
+        cors_safelisted_mode: bool,
+        content: Option<PipelineSourceContent>,
+    },
+    File {
+        path: String,
+        content: Option<PipelineSourceContent>,
+    },
+    Xz {
+        source: Box<PipelineSourceBinV2>,
+        content: Option<PipelineSourceContent>,
+    },
+    AndroidSparseImg {
+        source: Box<PipelineSourceBinV2>,
+        content: Option<PipelineSourceContent>,
+    },
+    Mbr {
+        partuuid: Option<String>,
+        index: Option<u32>,
+        source: Box<PipelineSourceBinV2>,
+        content: Option<PipelineSourceContent>,
+    },
+    Gpt {
+        partlabel: Option<String>,
+        partuuid: Option<String>,
+        index: Option<u32>,
+        source: Box<PipelineSourceBinV2>,
+        content: Option<PipelineSourceContent>,
+    },
+}
+
+impl From<PipelineSourceBinV2> for PipelineSourceBin {
+    fn from(v2: PipelineSourceBinV2) -> Self {
+        match v2 {
+            PipelineSourceBinV2::Casync {
+                index,
+                chunk_store,
+                content,
+            } => Self::Casync {
+                index,
+                chunk_store,
+                content,
+            },
+            PipelineSourceBinV2::Http {
+                url,
+                cors_safelisted_mode,
+                content,
+            } => Self::Http {
+                url,
+                cors_safelisted_mode,
+                content,
+            },
+            PipelineSourceBinV2::File { path, content } => Self::File { path, content },
+            PipelineSourceBinV2::Xz { source, content } => Self::Xz {
+                source: Box::new(PipelineSourceBin::from(*source)),
+                content,
+            },
+            PipelineSourceBinV2::AndroidSparseImg { source, content } => Self::AndroidSparseImg {
+                source: Box::new(PipelineSourceBin::from(*source)),
+                content,
+            },
+            PipelineSourceBinV2::Mbr {
+                partuuid,
+                index,
+                source,
+                content,
+            } => Self::Mbr {
+                partuuid,
+                index,
+                lba_size: None,
+                source: Box::new(PipelineSourceBin::from(*source)),
+                content,
+            },
+            PipelineSourceBinV2::Gpt {
+                partlabel,
+                partuuid,
+                index,
+                source,
+                content,
+            } => Self::Gpt {
+                partlabel,
+                partuuid,
+                index,
+                lba_size: None,
+                source: Box::new(PipelineSourceBin::from(*source)),
+                content,
+            },
+        }
+    }
 }
 
 impl From<PipelineSource> for PipelineSourceBin {
@@ -90,12 +199,14 @@ impl From<PipelineSource> for PipelineSourceBin {
                     PipelineSourceMbr {
                         partuuid,
                         index,
+                        lba_size,
                         source,
                         content,
                     },
             }) => Self::Mbr {
                 partuuid,
                 index,
+                lba_size,
                 source: Box::new(PipelineSourceBin::from(*source)),
                 content,
             },
@@ -105,6 +216,7 @@ impl From<PipelineSource> for PipelineSourceBin {
                         partlabel,
                         partuuid,
                         index,
+                        lba_size,
                         source,
                         content,
                     },
@@ -112,6 +224,7 @@ impl From<PipelineSource> for PipelineSourceBin {
                 partlabel,
                 partuuid,
                 index,
+                lba_size,
                 source: Box::new(PipelineSourceBin::from(*source)),
                 content,
             },
@@ -161,12 +274,14 @@ impl From<PipelineSourceBin> for PipelineSource {
             PipelineSourceBin::Mbr {
                 partuuid,
                 index,
+                lba_size,
                 source,
                 content,
             } => Self::Mbr(PipelineSourceMbrSource {
                 mbr: PipelineSourceMbr {
                     partuuid,
                     index,
+                    lba_size,
                     source: Box::new(PipelineSource::from(*source)),
                     content,
                 },
@@ -175,6 +290,7 @@ impl From<PipelineSourceBin> for PipelineSource {
                 partlabel,
                 partuuid,
                 index,
+                lba_size,
                 source,
                 content,
             } => Self::Gpt(PipelineSourceGptSource {
@@ -182,6 +298,7 @@ impl From<PipelineSourceBin> for PipelineSource {
                     partlabel,
                     partuuid,
                     index,
+                    lba_size,
                     source: Box::new(PipelineSource::from(*source)),
                     content,
                 },

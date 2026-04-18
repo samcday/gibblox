@@ -15,11 +15,11 @@ use gibblox_casync_std::{
 };
 use gibblox_core::{
     AlignedByteReader, BlockByteReader, BlockReader, ByteReader, GptBlockReader,
-    GptPartitionSelector,
+    GptBlockReaderConfig, GptPartitionSelector,
 };
 use gibblox_file::FileReader;
 use gibblox_http::{HttpReader, HttpReaderConfig};
-use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
+use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
 use gibblox_xz::XzBlockReader;
 use tracing::warn;
 use url::Url;
@@ -123,7 +123,11 @@ pub(crate) fn open_pipeline_source<'a>(
                 };
 
                 let upstream = open_pipeline_source(source.mbr.source.as_ref(), opts).await?;
-                let reader = MbrBlockReader::new(upstream, selector, opts.image_block_size)
+                let mut config = MbrBlockReaderConfig::new(selector, opts.image_block_size);
+                if let Some(lba_size) = source.mbr.lba_size {
+                    config = config.with_source_lba_size(lba_size);
+                }
+                let reader = MbrBlockReader::open_with_config(upstream, config)
                     .await
                     .map_err(|err| anyhow!("open mbr reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
@@ -140,7 +144,11 @@ pub(crate) fn open_pipeline_source<'a>(
                 };
 
                 let upstream = open_pipeline_source(source.gpt.source.as_ref(), opts).await?;
-                let reader = GptBlockReader::new(upstream, selector, opts.image_block_size)
+                let mut config = GptBlockReaderConfig::new(selector, opts.image_block_size);
+                if let Some(lba_size) = source.gpt.lba_size {
+                    config = config.with_source_lba_size(lba_size);
+                }
+                let reader = GptBlockReader::open_with_config(upstream, config)
                     .await
                     .map_err(|err| anyhow!("open gpt reader: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)

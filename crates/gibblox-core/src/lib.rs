@@ -19,7 +19,7 @@ mod window_block;
 
 pub use block_byte::BlockByteReader;
 pub use byte_range::AlignedByteReader;
-pub use gpt::{GptBlockReader, GptPartitionSelector};
+pub use gpt::{GptBlockReader, GptBlockReaderConfig, GptPartitionSelector};
 pub use lru::{LruBlockReader, LruConfig};
 pub use offset_byte::OffsetByteReader;
 pub use paged::{PagedBlockConfig, PagedBlockReader};
