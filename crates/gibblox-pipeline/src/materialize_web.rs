@@ -9,7 +9,7 @@ use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
 use gibblox_casync_web::{WebCasyncChunkStore, WebCasyncChunkStoreConfig, WebCasyncIndexSource};
 use gibblox_core::{
     AlignedByteReader, BlockByteReader, BlockReader, ByteReader, GibbloxError, GibbloxErrorKind,
-    GibbloxResult, GptBlockReader, GptPartitionSelector,
+    GibbloxResult, GptBlockReader, GptBlockReaderConfig, GptPartitionSelector,
 };
 use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
@@ -89,8 +89,11 @@ fn resolve_pipeline_source<'a>(
             PipelineSource::Mbr(source) => {
                 let upstream = resolve_pipeline_source(source.mbr.source.as_ref(), opts).await?;
                 let selector = mbr_selector(source)?;
-                let config = MbrBlockReaderConfig::new(selector, upstream.block_size())
+                let mut config = MbrBlockReaderConfig::new(selector, upstream.block_size())
                     .with_source_identity(source_identity(source.mbr.source.as_ref()));
+                if let Some(lba_size) = source.mbr.lba_size {
+                    config = config.with_source_lba_size(lba_size);
+                }
                 let reader = MbrBlockReader::open_with_config(upstream, config).await?;
                 let reader: Arc<dyn BlockReader> = Arc::new(reader);
                 Ok(reader)
@@ -99,7 +102,12 @@ fn resolve_pipeline_source<'a>(
                 let upstream = resolve_pipeline_source(source.gpt.source.as_ref(), opts).await?;
                 let selector = gpt_selector(source)?;
                 let block_size = upstream.block_size();
-                let reader = GptBlockReader::new(upstream, selector, block_size).await?;
+                let mut config = GptBlockReaderConfig::new(selector, block_size)
+                    .with_source_identity(source_identity(source.gpt.source.as_ref()));
+                if let Some(lba_size) = source.gpt.lba_size {
+                    config = config.with_source_lba_size(lba_size);
+                }
+                let reader = GptBlockReader::open_with_config(upstream, config).await?;
                 let reader: Arc<dyn BlockReader> = Arc::new(reader);
                 Ok(reader)
             }

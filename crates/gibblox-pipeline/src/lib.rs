@@ -82,12 +82,16 @@ pub fn decode_pipeline(bytes: &[u8]) -> Result<PipelineSource, PipelineCodecErro
     let Some(format_version) = pipeline_bin_header_version(bytes) else {
         return Err(PipelineCodecError::InvalidMagic);
     };
-    if format_version != PIPELINE_BIN_FORMAT_VERSION {
-        return Err(PipelineCodecError::UnsupportedFormatVersion(format_version));
-    }
 
     let payload = &bytes[PIPELINE_BIN_HEADER_LEN..];
-    let pipeline: PipelineSourceBin = postcard::from_bytes(payload)?;
+    let pipeline = match format_version {
+        3 => postcard::from_bytes::<PipelineSourceBin>(payload)?,
+        2 => {
+            let v2: bin::PipelineSourceBinV2 = postcard::from_bytes(payload)?;
+            PipelineSourceBin::from(v2)
+        }
+        _ => return Err(PipelineCodecError::UnsupportedFormatVersion(format_version)),
+    };
     Ok(PipelineSource::from(pipeline))
 }
 
@@ -428,6 +432,7 @@ fn write_pipeline_identity(source: &PipelineSource, out: &mut dyn fmt::Write) ->
             out.write_str("mbr{")?;
             write_opt_string_field(out, "partuuid", source.mbr.partuuid.as_deref())?;
             write_opt_u32_field(out, "index", source.mbr.index)?;
+            write_opt_u32_field(out, "lba_size", source.mbr.lba_size)?;
             out.write_str("source=")?;
             write_pipeline_identity(source.mbr.source.as_ref(), out)?;
             out.write_str("}")
@@ -437,6 +442,7 @@ fn write_pipeline_identity(source: &PipelineSource, out: &mut dyn fmt::Write) ->
             write_opt_string_field(out, "partlabel", source.gpt.partlabel.as_deref())?;
             write_opt_string_field(out, "partuuid", source.gpt.partuuid.as_deref())?;
             write_opt_u32_field(out, "index", source.gpt.index)?;
+            write_opt_u32_field(out, "lba_size", source.gpt.lba_size)?;
             out.write_str("source=")?;
             write_pipeline_identity(source.gpt.source.as_ref(), out)?;
             out.write_str("}")
@@ -649,6 +655,8 @@ pub struct PipelineSourceMbr {
     pub partuuid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lba_size: Option<u32>,
     #[serde(flatten)]
     pub source: Box<PipelineSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -663,6 +671,8 @@ enum PipelineSourceMbrValue {
         partuuid: Option<String>,
         #[serde(default)]
         index: Option<u32>,
+        #[serde(default)]
+        lba_size: Option<u32>,
         #[serde(flatten)]
         source: Box<PipelineSource>,
         #[serde(default)]
@@ -673,6 +683,8 @@ enum PipelineSourceMbrValue {
         partuuid: Option<String>,
         #[serde(default)]
         index: Option<u32>,
+        #[serde(default)]
+        lba_size: Option<u32>,
         source: Box<PipelineSource>,
         #[serde(default)]
         content: Option<PipelineSourceContent>,
@@ -688,17 +700,20 @@ where
         PipelineSourceMbrValue::Flatten {
             partuuid,
             index,
+            lba_size,
             source,
             content,
         }
         | PipelineSourceMbrValue::Source {
             partuuid,
             index,
+            lba_size,
             source,
             content,
         } => PipelineSourceMbr {
             partuuid,
             index,
+            lba_size,
             source,
             content,
         },
@@ -720,6 +735,8 @@ pub struct PipelineSourceGpt {
     pub partuuid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lba_size: Option<u32>,
     #[serde(flatten)]
     pub source: Box<PipelineSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -736,6 +753,8 @@ enum PipelineSourceGptValue {
         partuuid: Option<String>,
         #[serde(default)]
         index: Option<u32>,
+        #[serde(default)]
+        lba_size: Option<u32>,
         #[serde(flatten)]
         source: Box<PipelineSource>,
         #[serde(default)]
@@ -748,6 +767,8 @@ enum PipelineSourceGptValue {
         partuuid: Option<String>,
         #[serde(default)]
         index: Option<u32>,
+        #[serde(default)]
+        lba_size: Option<u32>,
         source: Box<PipelineSource>,
         #[serde(default)]
         content: Option<PipelineSourceContent>,
@@ -764,6 +785,7 @@ where
             partlabel,
             partuuid,
             index,
+            lba_size,
             source,
             content,
         }
@@ -771,12 +793,14 @@ where
             partlabel,
             partuuid,
             index,
+            lba_size,
             source,
             content,
         } => PipelineSourceGpt {
             partlabel,
             partuuid,
             index,
+            lba_size,
             source,
             content,
         },
@@ -813,6 +837,7 @@ mod tests {
                 partlabel: None,
                 partuuid: Some(String::from("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")),
                 index: None,
+                lba_size: None,
                 source: Box::new(PipelineSource::AndroidSparseImg(
                     PipelineSourceAndroidSparseImgSource {
                         android_sparseimg: PipelineSourceAndroidSparseImg {
@@ -889,6 +914,7 @@ gpt:
             mbr: PipelineSourceMbr {
                 partuuid: None,
                 index: None,
+                lba_size: None,
                 source: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                     http: String::from("https://cdn.example.invalid/rootfs.img"),
                     cors_safelisted_mode: false,
@@ -912,6 +938,7 @@ gpt:
                 partlabel: Some(String::from("  ")),
                 partuuid: None,
                 index: None,
+                lba_size: None,
                 source: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                     http: String::from("https://cdn.example.invalid/rootfs.img"),
                     cors_safelisted_mode: false,
@@ -959,12 +986,12 @@ gpt:
     fn rejects_unsupported_format_version() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&crate::bin::PIPELINE_BIN_MAGIC);
-        bytes.extend_from_slice(&3u16.to_le_bytes());
+        bytes.extend_from_slice(&99u16.to_le_bytes());
 
         let err = decode_pipeline(&bytes).expect_err("unsupported version should fail");
         assert!(matches!(
             err,
-            PipelineCodecError::UnsupportedFormatVersion(3)
+            PipelineCodecError::UnsupportedFormatVersion(99)
         ));
     }
 
@@ -977,7 +1004,43 @@ gpt:
         });
         let bytes = encode_pipeline(&source).expect("encode pipeline");
 
-        assert_eq!(pipeline_bin_header_version(&bytes), Some(2));
+        assert_eq!(pipeline_bin_header_version(&bytes), Some(3));
+    }
+
+    #[test]
+    fn decodes_v2_payload_with_lba_size_none() {
+        // Build a v2-shaped GPT payload by hand: encode it via the v2 mirror
+        // struct in `bin`, slap on the v=2 header, then decode through the
+        // public path and assert the lba_size field defaults to None.
+        let v2 = crate::bin::PipelineSourceBinV2::Gpt {
+            partlabel: None,
+            partuuid: Some(String::from("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")),
+            index: None,
+            source: Box::new(crate::bin::PipelineSourceBinV2::Http {
+                url: String::from("https://cdn.example.invalid/rootfs.img"),
+                cors_safelisted_mode: false,
+                content: Some(sample_content()),
+            }),
+            content: None,
+        };
+        let payload = postcard::to_allocvec(&v2).expect("encode v2");
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&crate::bin::PIPELINE_BIN_MAGIC);
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&payload);
+
+        let decoded = decode_pipeline(&bytes).expect("decode v2 payload");
+        match decoded {
+            PipelineSource::Gpt(g) => {
+                assert_eq!(g.gpt.lba_size, None);
+                assert_eq!(
+                    g.gpt.partuuid.as_deref(),
+                    Some("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")
+                );
+            }
+            other => panic!("expected gpt, got {other:?}"),
+        }
     }
 
     #[test]
@@ -987,6 +1050,7 @@ gpt:
                 partlabel: None,
                 partuuid: Some(String::from("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")),
                 index: None,
+                lba_size: None,
                 source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
                     xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
                         http: String::from("https://cdn.example.invalid/device.img.xz"),
