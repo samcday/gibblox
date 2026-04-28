@@ -18,8 +18,8 @@ pub struct Client {
 impl Client {
     pub fn new() -> Result<Self, GibbloxError> {
         let client = ReqwestClient::builder()
-            .connect_timeout(std::time::Duration::from_secs(3))
-            .timeout(std::time::Duration::from_secs(6))
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .map_err(|err| {
                 GibbloxError::with_message(
