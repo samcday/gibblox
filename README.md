@@ -60,6 +60,7 @@ gibblox /tmp/pipeline.bin > /tmp/ipxe.iso
 - `gibblox-android-sparse`: Android sparse image block reader.
 - `gibblox-mbr`: MBR partition-backed block reader.
 - `gibblox-zip`: ZIP file entry-backed block reader (stored and deflate entries).
+- `gibblox-tar`: TAR file entry-backed byte reader.
 - `gibblox-casync`: no_std casync index + reconstruction core.
 - `gibblox-casync-std`: native index/chunk source + integrated chunk cache/store.
 - `gibblox-casync-web`: wasm-only index/chunk source + CacheStorage-backed chunk store.

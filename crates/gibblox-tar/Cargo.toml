@@ -1,0 +1,21 @@
+[package]
+name = "gibblox-tar"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+description = "Byte reader for selected tar entries."
+keywords = ["gibblox"]
+
+[features]
+default = []
+std = ["gibblox-core/std"]
+
+[dependencies]
+async-trait = { workspace = true }
+gibblox-core = { workspace = true }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }

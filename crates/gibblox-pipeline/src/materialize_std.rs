@@ -20,6 +20,7 @@ use gibblox_core::{
 use gibblox_file::FileReader;
 use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
+use gibblox_tar::TarEntryByteReader;
 use gibblox_xz::XzBlockReader;
 use tracing::warn;
 use url::Url;
@@ -103,6 +104,15 @@ pub(crate) fn open_pipeline_source<'a>(
                     .map_err(|err| anyhow!("open xz reader: {err}"))?;
                 let reader = BlockByteReader::new(xz_reader, opts.image_block_size)
                     .map_err(|err| anyhow!("open xz block view: {err}"))?;
+                Ok(Arc::new(reader) as DynBlockReader)
+            }
+            PipelineSource::Tar(source) => {
+                let upstream = open_pipeline_byte_source(source.tar.source.as_ref(), opts).await?;
+                let tar_reader = TarEntryByteReader::new(source.tar.entry.as_str(), upstream)
+                    .await
+                    .map_err(|err| anyhow!("open tar entry reader: {err}"))?;
+                let reader = BlockByteReader::new(tar_reader, opts.image_block_size)
+                    .map_err(|err| anyhow!("open tar entry block view: {err}"))?;
                 Ok(Arc::new(reader) as DynBlockReader)
             }
             PipelineSource::AndroidSparseImg(source) => {
@@ -219,6 +229,13 @@ fn open_pipeline_byte_source<'a>(
                 let reader = XzBlockReader::new_from_byte_reader(upstream)
                     .await
                     .map_err(|err| anyhow!("open xz byte reader: {err}"))?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            PipelineSource::Tar(source) => {
+                let upstream = open_pipeline_byte_source(source.tar.source.as_ref(), opts).await?;
+                let reader = TarEntryByteReader::new(source.tar.entry.as_str(), upstream)
+                    .await
+                    .map_err(|err| anyhow!("open tar entry byte reader: {err}"))?;
                 Ok(Arc::new(reader) as DynByteReader)
             }
             _ => {
