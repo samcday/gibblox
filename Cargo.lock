@@ -854,6 +854,7 @@ dependencies = [
  "gibblox-http",
  "gibblox-mbr",
  "gibblox-schema",
+ "gibblox-tar",
  "gibblox-xz",
  "postcard",
  "serde",
@@ -888,6 +889,16 @@ version = "0.0.2-rc.1"
 dependencies = [
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "gibblox-tar"
+version = "0.0.2-rc.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
 ]
 
 [[package]]

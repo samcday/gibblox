@@ -13,6 +13,7 @@ use gibblox_core::{
 };
 use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
+use gibblox_tar::{TarEntryByteReader, TarEntryByteReaderConfig};
 use gibblox_xz::{XzBlockReader, XzBlockReaderConfig};
 use tracing::warn;
 use url::Url;
@@ -72,6 +73,16 @@ fn resolve_pipeline_source<'a>(
                 let config = XzBlockReaderConfig::default()
                     .with_source_identity(source_identity(source.xz.as_ref()));
                 let reader = XzBlockReader::open_with_byte_reader_config(upstream, config).await?;
+                let reader = BlockByteReader::new(reader, opts.image_block_size)?;
+                let reader: DynBlockReader = Arc::new(reader);
+                Ok(reader)
+            }
+            PipelineSource::Tar(source) => {
+                let upstream =
+                    resolve_pipeline_byte_source(source.tar.source.as_ref(), opts).await?;
+                let config = TarEntryByteReaderConfig::new(source.tar.entry.as_str())?
+                    .with_source_identity(source_identity(source.tar.source.as_ref()));
+                let reader = TarEntryByteReader::open_with_config(upstream, config).await?;
                 let reader = BlockByteReader::new(reader, opts.image_block_size)?;
                 let reader: DynBlockReader = Arc::new(reader);
                 Ok(reader)
@@ -143,6 +154,14 @@ fn resolve_pipeline_byte_source<'a>(
                 let config = XzBlockReaderConfig::default()
                     .with_source_identity(source_identity(source.xz.as_ref()));
                 let reader = XzBlockReader::open_with_byte_reader_config(upstream, config).await?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            PipelineSource::Tar(source) => {
+                let upstream =
+                    resolve_pipeline_byte_source(source.tar.source.as_ref(), opts).await?;
+                let config = TarEntryByteReaderConfig::new(source.tar.entry.as_str())?
+                    .with_source_identity(source_identity(source.tar.source.as_ref()));
+                let reader = TarEntryByteReader::open_with_config(upstream, config).await?;
                 Ok(Arc::new(reader) as DynByteReader)
             }
             _ => {
