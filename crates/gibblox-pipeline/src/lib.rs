@@ -21,8 +21,9 @@ pub use gibblox_schema::bin::{
 pub use gibblox_schema::{
     PipelineAndroidSparseChunkIndexHint, PipelineAndroidSparseIndexHint, PipelineContentDigestHint,
     PipelineHint, PipelineHintEntry, PipelineHints, PipelineHintsCodecError,
-    PipelineHintsValidationError, decode_pipeline_hints, decode_pipeline_hints_prefix,
-    encode_pipeline_hints, pipeline_hints_bin_header_version, validate_pipeline_hints,
+    PipelineHintsValidationError, PipelineTarEntryIndexHint, decode_pipeline_hints,
+    decode_pipeline_hints_prefix, encode_pipeline_hints, pipeline_hints_bin_header_version,
+    validate_pipeline_hints,
 };
 
 pub mod bin;
@@ -155,6 +156,7 @@ pub enum PipelineValidationError {
     EmptyFile,
     EmptyCasyncIndex,
     EmptyCasyncChunkStore,
+    EmptyTarEntry,
     MissingHttpContent,
     MissingFileContent,
     MissingCasyncContent,
@@ -180,6 +182,7 @@ impl fmt::Display for PipelineValidationError {
             Self::EmptyCasyncChunkStore => {
                 write!(f, "pipeline casync.chunk_store source must not be empty")
             }
+            Self::EmptyTarEntry => write!(f, "pipeline tar.entry must not be empty"),
             Self::MissingHttpContent => {
                 write!(f, "pipeline http source must include content metadata")
             }
@@ -295,6 +298,15 @@ fn validate_pipeline_source(
                 validate_pipeline_content(content)?;
             }
             validate_pipeline_source(source.xz.as_ref(), depth + 1)
+        }
+        PipelineSource::Tar(source) => {
+            if source.tar.entry.trim().is_empty() {
+                return Err(PipelineValidationError::EmptyTarEntry);
+            }
+            if let Some(content) = source.tar.content.as_ref() {
+                validate_pipeline_content(content)?;
+            }
+            validate_pipeline_source(source.tar.source.as_ref(), depth + 1)
         }
         PipelineSource::AndroidSparseImg(source) => {
             if let Some(content) = source.android_sparseimg.content.as_ref() {
@@ -423,6 +435,13 @@ fn write_pipeline_identity(source: &PipelineSource, out: &mut dyn fmt::Write) ->
             write_pipeline_identity(source.xz.as_ref(), out)?;
             out.write_str("}")
         }
+        PipelineSource::Tar(source) => {
+            out.write_str("tar{")?;
+            write_string_field(out, "entry", source.tar.entry.as_str())?;
+            out.write_str("source=")?;
+            write_pipeline_identity(source.tar.source.as_ref(), out)?;
+            out.write_str("}")
+        }
         PipelineSource::AndroidSparseImg(source) => {
             out.write_str("android_sparseimg{source=")?;
             write_pipeline_identity(source.android_sparseimg.source.as_ref(), out)?;
@@ -494,6 +513,7 @@ pub enum PipelineSource {
     Http(PipelineSourceHttpSource),
     File(PipelineSourceFileSource),
     Xz(PipelineSourceXzSource),
+    Tar(PipelineSourceTarSource),
     AndroidSparseImg(PipelineSourceAndroidSparseImgSource),
     Mbr(PipelineSourceMbrSource),
     Gpt(PipelineSourceGptSource),
@@ -578,6 +598,22 @@ pub struct PipelineSourceXzSource {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct PipelineSourceTarSource {
+    #[serde(deserialize_with = "deserialize_tar_source")]
+    pub tar: PipelineSourceTar,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PipelineSourceTar {
+    pub entry: String,
+    #[serde(flatten)]
+    pub source: Box<PipelineSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineSourceAndroidSparseImgSource {
     #[serde(deserialize_with = "deserialize_android_sparseimg_source")]
     pub android_sparseimg: PipelineSourceAndroidSparseImg,
@@ -608,6 +644,47 @@ where
     Ok(match value {
         NestedPipelineSourceValue::Direct(source) => source,
         NestedPipelineSourceValue::Source { source } => source,
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum PipelineSourceTarValue {
+    Flatten {
+        entry: String,
+        #[serde(flatten)]
+        source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
+    },
+    Source {
+        entry: String,
+        source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
+    },
+}
+
+fn deserialize_tar_source<'de, D>(deserializer: D) -> Result<PipelineSourceTar, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = PipelineSourceTarValue::deserialize(deserializer)?;
+    Ok(match value {
+        PipelineSourceTarValue::Flatten {
+            entry,
+            source,
+            content,
+        }
+        | PipelineSourceTarValue::Source {
+            entry,
+            source,
+            content,
+        } => PipelineSourceTar {
+            entry,
+            source,
+            content,
+        },
     })
 }
 
@@ -815,10 +892,10 @@ mod tests {
         MAX_PIPELINE_DEPTH, PipelineCodecError, PipelineSource, PipelineSourceAndroidSparseImg,
         PipelineSourceAndroidSparseImgSource, PipelineSourceCasync, PipelineSourceCasyncSource,
         PipelineSourceContent, PipelineSourceGpt, PipelineSourceGptSource,
-        PipelineSourceHttpSource, PipelineSourceMbr, PipelineSourceMbrSource,
-        PipelineSourceXzSource, PipelineValidationError, decode_pipeline, encode_pipeline,
-        pipeline_bin_header_version, pipeline_identity_id, pipeline_identity_string,
-        validate_pipeline,
+        PipelineSourceHttpSource, PipelineSourceMbr, PipelineSourceMbrSource, PipelineSourceTar,
+        PipelineSourceTarSource, PipelineSourceXzSource, PipelineValidationError, decode_pipeline,
+        encode_pipeline, pipeline_bin_header_version, pipeline_identity_id,
+        pipeline_identity_string, validate_pipeline,
     };
 
     fn sample_content() -> PipelineSourceContent {
@@ -888,6 +965,55 @@ gpt:
                 assert_eq!(source.gpt.partlabel.as_deref(), Some("rootfs"));
             }
             other => panic!("expected gpt source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validates_and_roundtrips_tar_pipeline() {
+        let source = PipelineSource::Tar(PipelineSourceTarSource {
+            tar: PipelineSourceTar {
+                entry: String::from("/rootfs.img"),
+                source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
+                    xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
+                        http: String::from("https://cdn.example.invalid/rootfs.tar.xz"),
+                        cors_safelisted_mode: false,
+                        content: Some(sample_content()),
+                    })),
+                    content: None,
+                })),
+                content: None,
+            },
+        });
+
+        validate_pipeline(&source).expect("tar pipeline should validate");
+        let encoded = encode_pipeline(&source).expect("encode pipeline");
+        let decoded = decode_pipeline(&encoded).expect("decode pipeline");
+        assert_eq!(decoded, source);
+    }
+
+    #[test]
+    fn parses_tar_source_style_yaml_pipeline() {
+        let source: PipelineSource = serde_yaml::from_str(
+            r#"
+tar:
+  entry: /rootfs.img
+  source:
+    xz:
+      source:
+        http: https://cdn.example.invalid/rootfs.tar.xz
+        content:
+          digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+          size_bytes: 123
+"#,
+        )
+        .expect("parse tar source-style YAML");
+
+        validate_pipeline(&source).expect("tar source-style pipeline should validate");
+        match source {
+            PipelineSource::Tar(source) => {
+                assert_eq!(source.tar.entry.as_str(), "/rootfs.img");
+            }
+            other => panic!("expected tar source, got {other:?}"),
         }
     }
 

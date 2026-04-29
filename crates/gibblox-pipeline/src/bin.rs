@@ -8,7 +8,8 @@ use crate::{
     PipelineSource, PipelineSourceAndroidSparseImg, PipelineSourceAndroidSparseImgSource,
     PipelineSourceCasync, PipelineSourceCasyncSource, PipelineSourceContent,
     PipelineSourceFileSource, PipelineSourceGpt, PipelineSourceGptSource, PipelineSourceHttpSource,
-    PipelineSourceMbr, PipelineSourceMbrSource, PipelineSourceXzSource,
+    PipelineSourceMbr, PipelineSourceMbrSource, PipelineSourceTar, PipelineSourceTarSource,
+    PipelineSourceXzSource,
 };
 
 pub const PIPELINE_BIN_MAGIC: [u8; 8] = *b"GBXPIPE0";
@@ -36,6 +37,11 @@ pub enum PipelineSourceBin {
         content: Option<PipelineSourceContent>,
     },
     Xz {
+        source: Box<PipelineSourceBin>,
+        content: Option<PipelineSourceContent>,
+    },
+    Tar {
+        entry: String,
         source: Box<PipelineSourceBin>,
         content: Option<PipelineSourceContent>,
     },
@@ -188,6 +194,18 @@ impl From<PipelineSource> for PipelineSourceBin {
                 source: Box::new(PipelineSourceBin::from(*xz)),
                 content,
             },
+            PipelineSource::Tar(PipelineSourceTarSource {
+                tar:
+                    PipelineSourceTar {
+                        entry,
+                        source,
+                        content,
+                    },
+            }) => Self::Tar {
+                entry,
+                source: Box::new(PipelineSourceBin::from(*source)),
+                content,
+            },
             PipelineSource::AndroidSparseImg(PipelineSourceAndroidSparseImgSource {
                 android_sparseimg,
             }) => Self::AndroidSparseImg {
@@ -262,6 +280,17 @@ impl From<PipelineSourceBin> for PipelineSource {
             PipelineSourceBin::Xz { source, content } => Self::Xz(PipelineSourceXzSource {
                 xz: Box::new(PipelineSource::from(*source)),
                 content,
+            }),
+            PipelineSourceBin::Tar {
+                entry,
+                source,
+                content,
+            } => Self::Tar(PipelineSourceTarSource {
+                tar: PipelineSourceTar {
+                    entry,
+                    source: Box::new(PipelineSource::from(*source)),
+                    content,
+                },
             }),
             PipelineSourceBin::AndroidSparseImg { source, content } => {
                 Self::AndroidSparseImg(PipelineSourceAndroidSparseImgSource {
