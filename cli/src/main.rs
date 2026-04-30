@@ -10,8 +10,9 @@ use clap::{Args, Parser, Subcommand};
 use gibblox_core::{BlockReader, ReadContext, WindowBlockReader};
 use gibblox_optimizer::{PipelineOptimizeOptions, optimize_pipeline_hints};
 use gibblox_pipeline::{
-    OpenPipelineOptions, PipelineCachePolicy, PipelineSource, decode_pipeline, encode_pipeline,
-    encode_pipeline_hints, open_pipeline, pipeline_bin_header_version, validate_pipeline,
+    OpenPipelineOptions, PipelineCachePolicy, PipelineSource, decode_pipeline,
+    decode_pipeline_hints, encode_pipeline, encode_pipeline_hints, open_pipeline,
+    pipeline_bin_header_version, validate_pipeline,
 };
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -64,6 +65,9 @@ struct Cli {
     /// Cache placement policy (`none`, `head`, or `tail`).
     #[arg(long, value_name = "POLICY", value_enum, requires = "pipeline")]
     cache_policy: Option<CliCachePolicy>,
+    /// Raw GBXHINT0 pipeline hints path ("-" for stdin).
+    #[arg(long, value_name = "HINTS", requires = "pipeline")]
+    hints: Option<String>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -144,10 +148,11 @@ async fn main() -> Result<()> {
             || cli.start.is_some()
             || cli.count.is_some()
             || cli.blocksize.is_some()
-            || cli.cache_policy.is_some())
+            || cli.cache_policy.is_some()
+            || cli.hints.is_some())
     {
         bail!(
-            "PIPELINE, --output, --start, --count, --blocksize, and --cache-policy cannot be used with subcommands"
+            "PIPELINE, --output, --start, --count, --blocksize, --cache-policy, and --hints cannot be used with subcommands"
         );
     }
 
@@ -165,6 +170,7 @@ async fn main() -> Result<()> {
                 cli.count,
                 cli.blocksize,
                 cli.cache_policy,
+                cli.hints.as_deref(),
             )
             .await
         }
@@ -193,12 +199,16 @@ async fn run_default_pipeline_execute(
     count_blocks: Option<u64>,
     requested_block_size: Option<u32>,
     cache_policy: Option<CliCachePolicy>,
+    hints_path: Option<&str>,
 ) -> Result<()> {
     validate_binary_output(
         output_path,
         "gibblox pipeline",
         std::io::stdout().is_terminal(),
     )?;
+    if input_path == "-" && hints_path == Some("-") {
+        bail!("PIPELINE and --hints cannot both read from stdin");
+    }
 
     let output_block_size = requested_block_size.unwrap_or(DEFAULT_IMAGE_BLOCK_SIZE);
     validate_image_block_size(output_block_size)?;
@@ -210,12 +220,14 @@ async fn run_default_pipeline_execute(
     let source = parse_pipeline_document(&input, input_path)?;
     validate_pipeline(&source)
         .with_context(|| format!("validate pipeline input {}", io_label(input_path)))?;
+    let pipeline_hints = read_optional_pipeline_hints(hints_path)?;
 
     let reader = open_pipeline(
         &source,
         &OpenPipelineOptions {
             image_block_size: DEFAULT_SOURCE_BLOCK_SIZE,
             cache_policy,
+            pipeline_hints,
             ..OpenPipelineOptions::default()
         },
     )
@@ -302,6 +314,20 @@ fn read_pipeline_yaml(path: &str) -> Result<PipelineSource> {
         .with_context(|| format!("read pipeline YAML input {}", io_label(path)))?;
     serde_yaml::from_slice(&input)
         .with_context(|| format!("parse pipeline YAML input {}", io_label(path)))
+}
+
+fn read_optional_pipeline_hints(
+    path: Option<&str>,
+) -> Result<Option<gibblox_pipeline::PipelineHints>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+
+    let input = read_input_bytes(path)
+        .with_context(|| format!("read pipeline hints input {}", io_label(path)))?;
+    decode_pipeline_hints(&input)
+        .map(Some)
+        .map_err(|err| anyhow!("decode pipeline hints input {}: {err}", io_label(path)))
 }
 
 fn parse_pipeline_document(input: &[u8], label: &str) -> Result<PipelineSource> {
@@ -547,6 +573,18 @@ mod tests {
             cli.cache_policy,
             Some(super::CliCachePolicy::Tail)
         ));
+    }
+
+    #[test]
+    fn parse_top_level_pipeline_hints() {
+        let cli = Cli::parse_from([
+            "gibblox-cli",
+            "pipeline.yaml",
+            "--hints",
+            "pipeline.gbxhint0",
+        ]);
+        assert_eq!(cli.pipeline.as_deref(), Some("pipeline.yaml"));
+        assert_eq!(cli.hints.as_deref(), Some("pipeline.gbxhint0"));
     }
 
     #[test]
