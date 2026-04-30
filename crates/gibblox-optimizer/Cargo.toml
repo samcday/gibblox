@@ -1,0 +1,19 @@
+[package]
+name = "gibblox-optimizer"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+description = "std-only pipeline hint optimizer for gibblox."
+
+[dependencies]
+anyhow = "1.0.95"
+gibblox-android-sparse = { workspace = true, features = ["std"] }
+gibblox-core = { workspace = true, features = ["std"] }
+gibblox-pipeline = { workspace = true, features = ["std"] }
+gibblox-tar = { workspace = true, features = ["std"] }
+tracing = "0.1.41"
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }

@@ -13,12 +13,12 @@ use crate::{
 };
 
 pub const PIPELINE_BIN_MAGIC: [u8; 8] = *b"GBXPIPE0";
-pub const PIPELINE_BIN_FORMAT_VERSION: u16 = 3;
+pub const PIPELINE_BIN_FORMAT_VERSION: u16 = 4;
 pub const PIPELINE_BIN_HEADER_LEN: usize = PIPELINE_BIN_MAGIC.len() + 2;
 
 /// Format versions this build can decode. Newer code adds optional fields and
 /// older payloads deserialize against the older mirror struct, then translate.
-pub const PIPELINE_BIN_SUPPORTED_VERSIONS: &[u16] = &[2, 3];
+pub const PIPELINE_BIN_SUPPORTED_VERSIONS: &[u16] = &[2, 3, 4];
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum PipelineSourceBin {

@@ -24,6 +24,7 @@ pkg-fmt = "zip"
 anyhow = "1.0.95"
 clap = { version = "4.5.32", features = ["derive"] }
 gibblox-core = { workspace = true, features = ["std"] }
+gibblox-optimizer = { workspace = true }
 gibblox-pipeline = { workspace = true, features = ["std"] }
 serde_yaml = "0.9.34"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

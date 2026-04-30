@@ -752,6 +752,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gibblox-core",
+ "gibblox-optimizer",
  "gibblox-pipeline",
  "serde_yaml",
  "tokio",
@@ -833,6 +834,19 @@ dependencies = [
  "futures",
  "gibblox-core",
  "hadris-part",
+ "tracing",
+]
+
+[[package]]
+name = "gibblox-optimizer"
+version = "0.0.2-rc.1"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gibblox-android-sparse",
+ "gibblox-core",
+ "gibblox-pipeline",
+ "gibblox-tar",
  "tracing",
 ]
 
