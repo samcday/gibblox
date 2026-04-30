@@ -86,7 +86,7 @@ pub fn decode_pipeline(bytes: &[u8]) -> Result<PipelineSource, PipelineCodecErro
 
     let payload = &bytes[PIPELINE_BIN_HEADER_LEN..];
     let pipeline = match format_version {
-        3 => postcard::from_bytes::<PipelineSourceBin>(payload)?,
+        3 | 4 => postcard::from_bytes::<PipelineSourceBin>(payload)?,
         2 => {
             let v2: bin::PipelineSourceBinV2 = postcard::from_bytes(payload)?;
             PipelineSourceBin::from(v2)
@@ -1130,7 +1130,7 @@ tar:
         });
         let bytes = encode_pipeline(&source).expect("encode pipeline");
 
-        assert_eq!(pipeline_bin_header_version(&bytes), Some(3));
+        assert_eq!(pipeline_bin_header_version(&bytes), Some(4));
     }
 
     #[test]

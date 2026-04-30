@@ -122,8 +122,7 @@ impl fmt::Display for PipelineHintsValidationError {
             ),
             Self::DuplicateHintTypeTarEntryIndex { pipeline_identity } => write!(
                 f,
-                "pipeline hint entry '{}' contains duplicate TarEntryIndex hints",
-                pipeline_identity
+                "pipeline hint entry '{pipeline_identity}' contains duplicate TarEntryIndex hints"
             ),
             Self::DuplicateHintTypeContentDigest { pipeline_identity } => write!(
                 f,
