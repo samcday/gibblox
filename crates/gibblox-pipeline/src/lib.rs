@@ -12,7 +12,8 @@ use gibblox_core::{BlockReaderConfigIdentity, config_identity_string, derive_con
 use serde::{Deserialize, Serialize};
 
 use crate::bin::{
-    PIPELINE_BIN_FORMAT_VERSION, PIPELINE_BIN_HEADER_LEN, PIPELINE_BIN_MAGIC, PipelineSourceBin,
+    PIPELINE_BIN_FORMAT_VERSION, PIPELINE_BIN_HEADER_LEN, PIPELINE_BIN_MAGIC,
+    PIPELINE_BIN_SUPPORTED_VERSIONS, PipelineSourceBin,
 };
 
 pub use gibblox_schema::bin::{
@@ -64,7 +65,7 @@ impl fmt::Display for PipelineCodecError {
             }
             Self::UnsupportedFormatVersion(version) => write!(
                 f,
-                "unsupported pipeline format version {version} (expected {PIPELINE_BIN_FORMAT_VERSION})"
+                "unsupported pipeline format version {version} (supported {PIPELINE_BIN_SUPPORTED_VERSIONS:?})"
             ),
         }
     }
@@ -85,14 +86,10 @@ pub fn decode_pipeline(bytes: &[u8]) -> Result<PipelineSource, PipelineCodecErro
     };
 
     let payload = &bytes[PIPELINE_BIN_HEADER_LEN..];
-    let pipeline = match format_version {
-        3 | 4 => postcard::from_bytes::<PipelineSourceBin>(payload)?,
-        2 => {
-            let v2: bin::PipelineSourceBinV2 = postcard::from_bytes(payload)?;
-            PipelineSourceBin::from(v2)
-        }
-        _ => return Err(PipelineCodecError::UnsupportedFormatVersion(format_version)),
-    };
+    if !PIPELINE_BIN_SUPPORTED_VERSIONS.contains(&format_version) {
+        return Err(PipelineCodecError::UnsupportedFormatVersion(format_version));
+    }
+    let pipeline = postcard::from_bytes::<PipelineSourceBin>(payload)?;
     Ok(PipelineSource::from(pipeline))
 }
 
@@ -1130,43 +1127,7 @@ tar:
         });
         let bytes = encode_pipeline(&source).expect("encode pipeline");
 
-        assert_eq!(pipeline_bin_header_version(&bytes), Some(4));
-    }
-
-    #[test]
-    fn decodes_v2_payload_with_lba_size_none() {
-        // Build a v2-shaped GPT payload by hand: encode it via the v2 mirror
-        // struct in `bin`, slap on the v=2 header, then decode through the
-        // public path and assert the lba_size field defaults to None.
-        let v2 = crate::bin::PipelineSourceBinV2::Gpt {
-            partlabel: None,
-            partuuid: Some(String::from("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")),
-            index: None,
-            source: Box::new(crate::bin::PipelineSourceBinV2::Http {
-                url: String::from("https://cdn.example.invalid/rootfs.img"),
-                cors_safelisted_mode: false,
-                content: Some(sample_content()),
-            }),
-            content: None,
-        };
-        let payload = postcard::to_allocvec(&v2).expect("encode v2");
-
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&crate::bin::PIPELINE_BIN_MAGIC);
-        bytes.extend_from_slice(&2u16.to_le_bytes());
-        bytes.extend_from_slice(&payload);
-
-        let decoded = decode_pipeline(&bytes).expect("decode v2 payload");
-        match decoded {
-            PipelineSource::Gpt(g) => {
-                assert_eq!(g.gpt.lba_size, None);
-                assert_eq!(
-                    g.gpt.partuuid.as_deref(),
-                    Some("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")
-                );
-            }
-            other => panic!("expected gpt, got {other:?}"),
-        }
+        assert_eq!(pipeline_bin_header_version(&bytes), Some(0));
     }
 
     #[test]
