@@ -427,13 +427,24 @@ async fn validate_index(
         ));
     }
     verify_header_checksum(&header)?;
-    let header_meta = parse_header(&header, &PendingMetadata::default())?;
-    if !is_regular_entry_type(header_meta.entry_type) || header_meta.entry_type != index.entry_type
-    {
+    let mut header_meta = parse_header(&header, &PendingMetadata::default())?;
+    if header_meta.entry_type != index.entry_type {
         return Err(GibbloxError::with_message(
             GibbloxErrorKind::InvalidInput,
             "tar index entry type does not match archive header",
         ));
+    }
+    if header_meta.size_bytes != index.size_bytes {
+        if let Some(pending) = read_preceding_pax_metadata(
+            source,
+            source_size_bytes,
+            index.header_offset,
+            config.reader.max_metadata_bytes,
+        )
+        .await?
+        {
+            header_meta = parse_header(&header, &pending)?;
+        }
     }
     if header_meta.size_bytes != index.size_bytes {
         return Err(GibbloxError::with_message(
@@ -509,6 +520,94 @@ async fn read_pax_metadata(
     )
     .await?;
     parse_pax_payload(&payload)
+}
+
+async fn read_preceding_pax_metadata(
+    source: &dyn ByteReader,
+    source_size_bytes: u64,
+    target_header_offset: u64,
+    max_metadata_bytes: usize,
+) -> GibbloxResult<Option<PendingMetadata>> {
+    if target_header_offset < TAR_BLOCK_SIZE {
+        return Ok(None);
+    }
+
+    let max_metadata_bytes_u64 = u64::try_from(max_metadata_bytes).map_err(|_| {
+        GibbloxError::with_message(
+            GibbloxErrorKind::OutOfRange,
+            "tar metadata limit does not fit in u64",
+        )
+    })?;
+    let max_scan_bytes = padded_tar_size(max_metadata_bytes_u64)?
+        .checked_add(TAR_BLOCK_SIZE)
+        .ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "tar metadata scan overflow")
+        })?;
+    let scan_start = target_header_offset.saturating_sub(max_scan_bytes);
+    let scan_len_u64 = target_header_offset - scan_start;
+    let scan_len = usize::try_from(scan_len_u64).map_err(|_| {
+        GibbloxError::with_message(
+            GibbloxErrorKind::OutOfRange,
+            "tar metadata scan range does not fit in memory on this platform",
+        )
+    })?;
+    if scan_len < TAR_BLOCK_SIZE_USIZE {
+        return Ok(None);
+    }
+
+    let mut scan = alloc::vec![0u8; scan_len];
+    read_exact_at(
+        source,
+        source_size_bytes,
+        scan_start,
+        &mut scan,
+        ReadContext::FOREGROUND,
+    )
+    .await?;
+
+    let mut relative_offset = scan_len - TAR_BLOCK_SIZE_USIZE;
+    loop {
+        let mut header = [0u8; TAR_BLOCK_SIZE_USIZE];
+        header.copy_from_slice(&scan[relative_offset..relative_offset + TAR_BLOCK_SIZE_USIZE]);
+        if !is_zero_block(&header)
+            && verify_header_checksum(&header).is_ok()
+            && let Ok(header_meta) = parse_header(&header, &PendingMetadata::default())
+            && header_meta.entry_type == TYPE_PAX_LOCAL
+        {
+            let candidate_offset = scan_start + relative_offset as u64;
+            let data_offset = candidate_offset + TAR_BLOCK_SIZE;
+            if let Ok(padded_size) = padded_tar_size(header_meta.size_bytes)
+                && data_offset
+                    .checked_add(padded_size)
+                    .is_some_and(|data_end| data_end == target_header_offset)
+            {
+                match read_pax_metadata(
+                    source,
+                    source_size_bytes,
+                    data_offset,
+                    header_meta.size_bytes,
+                    max_metadata_bytes,
+                )
+                .await
+                {
+                    Ok(pending) => return Ok(Some(pending)),
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            GibbloxErrorKind::InvalidInput | GibbloxErrorKind::Unsupported
+                        ) => {}
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
+        if relative_offset < TAR_BLOCK_SIZE_USIZE {
+            break;
+        }
+        relative_offset -= TAR_BLOCK_SIZE_USIZE;
+    }
+
+    Ok(None)
 }
 
 async fn read_gnu_long_name(
@@ -712,7 +811,7 @@ fn parse_octal_field(raw: &[u8]) -> GibbloxResult<u64> {
         match *byte {
             0 | b' ' => {
                 if saw_digit {
-                    continue;
+                    break;
                 }
             }
             b'0'..=b'7' => {
@@ -975,6 +1074,31 @@ mod tests {
         assert_eq!(tar.entry_size_bytes(), 5);
     }
 
+    #[test]
+    fn generated_index_opens_pax_size_entry() {
+        let archive = build_pax_size_tar("rootfs.img", b"payload", 0);
+        let reader = memory_reader(archive.clone());
+        let tar = block_on(TarEntryByteReader::new("rootfs.img", reader))
+            .expect("open pax size tar entry");
+        assert_eq!(tar.entry_size_bytes(), 7);
+        let index = tar.entry_index().clone();
+
+        let reader = memory_reader(archive);
+        let config = TarEntryByteReaderConfig::new("rootfs.img").expect("config");
+        let tar = block_on(TarEntryByteReader::open_with_index(reader, config, index))
+            .expect("open pax size entry from index");
+        assert_eq!(tar.entry_size_bytes(), 7);
+    }
+
+    #[test]
+    fn octal_field_ends_at_first_terminator_after_digits() {
+        assert_eq!(parse_octal_field(b"7 3").expect("space terminator"), 7);
+        assert_eq!(
+            parse_octal_field(&[b'7', 0, b'3']).expect("NUL terminator"),
+            7
+        );
+    }
+
     fn memory_reader(data: Vec<u8>) -> Arc<dyn ByteReader> {
         Arc::new(MemoryByteReader { data })
     }
@@ -999,6 +1123,17 @@ mod tests {
         out
     }
 
+    fn build_pax_size_tar(path: &str, payload: &[u8], raw_size: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        let size = payload.len().to_string();
+        let record = pax_record("size", size.as_str());
+        append_entry(&mut out, "PaxHeader", record.as_bytes(), TYPE_PAX_LOCAL);
+        append_entry_with_size(&mut out, path, payload, TYPE_REGULAR, raw_size);
+        out.extend_from_slice(&[0u8; TAR_BLOCK_SIZE_USIZE]);
+        out.extend_from_slice(&[0u8; TAR_BLOCK_SIZE_USIZE]);
+        out
+    }
+
     fn pax_record(key: &str, value: &str) -> String {
         let mut len = key.len() + value.len() + 4;
         loop {
@@ -1011,13 +1146,23 @@ mod tests {
     }
 
     fn append_entry(out: &mut Vec<u8>, name: &str, payload: &[u8], entry_type: u8) {
+        append_entry_with_size(out, name, payload, entry_type, payload.len() as u64);
+    }
+
+    fn append_entry_with_size(
+        out: &mut Vec<u8>,
+        name: &str,
+        payload: &[u8],
+        entry_type: u8,
+        size: u64,
+    ) {
         let mut header = [0u8; TAR_BLOCK_SIZE_USIZE];
         let name_bytes = name.as_bytes();
         header[..name_bytes.len()].copy_from_slice(name_bytes);
         write_octal(&mut header[100..108], 0o644);
         write_octal(&mut header[108..116], 0);
         write_octal(&mut header[116..124], 0);
-        write_octal(&mut header[124..136], payload.len() as u64);
+        write_octal(&mut header[124..136], size);
         write_octal(&mut header[136..148], 0);
         header[148..156].fill(b' ');
         header[156] = entry_type;
