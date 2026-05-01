@@ -5,15 +5,19 @@ mod wasm {
     use gibblox_blockreader_messageport::{
         MessagePortBlockReaderClient, MessagePortBlockReaderServer,
     };
-    use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
+    use gibblox_core::{
+        BlockIdentityHasher32, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    };
     use gibblox_pipeline::{
-        OpenWebPipelineOptions, PipelineCachePolicy, decode_pipeline, open_pipeline_web,
-        pipeline_identity_id, pipeline_identity_string, validate_pipeline,
+        OpenWebPipelineOptions, PipelineCachePolicy, decode_pipeline, decode_pipeline_hints,
+        encode_pipeline_hints, open_pipeline_web, pipeline_identity_id, pipeline_identity_string,
+        validate_pipeline,
     };
     use gloo_timers::future::sleep;
     use js_sys::{Array, Object, Reflect, Uint8Array};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::hash::Hasher;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -41,10 +45,11 @@ mod wasm {
         pub reader: MessagePortBlockReaderClient,
     }
 
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Debug, Default)]
     pub struct OpenPipelineRequestOptions {
         pub image_block_size: Option<u32>,
         pub cache_policy: Option<PipelineCachePolicy>,
+        pub pipeline_hints_bin: Option<Vec<u8>>,
     }
 
     #[derive(Clone)]
@@ -250,7 +255,10 @@ mod wasm {
                 "build open_pipeline request",
             )?;
 
-            if options.image_block_size.is_some() || options.cache_policy.is_some() {
+            if options.image_block_size.is_some()
+                || options.cache_policy.is_some()
+                || options.pipeline_hints_bin.is_some()
+            {
                 let request_options = Object::new();
                 if let Some(image_block_size) = options.image_block_size {
                     set_prop(
@@ -265,6 +273,22 @@ mod wasm {
                         &request_options,
                         "cache_policy",
                         JsValue::from_str(cache_policy.as_str()),
+                        "build open_pipeline request",
+                    )?;
+                }
+                if let Some(pipeline_hints_bin) = options.pipeline_hints_bin.as_deref() {
+                    let len = u32::try_from(pipeline_hints_bin.len()).map_err(|_| {
+                        GibbloxError::with_message(
+                            GibbloxErrorKind::OutOfRange,
+                            "pipeline hints payload exceeds browser transfer limits",
+                        )
+                    })?;
+                    let bytes = Uint8Array::new_with_length(len);
+                    bytes.copy_from(pipeline_hints_bin);
+                    set_prop(
+                        &request_options,
+                        "pipeline_hints_bin",
+                        bytes.into(),
                         "build open_pipeline request",
                     )?;
                 }
@@ -568,6 +592,19 @@ mod wasm {
             options.cache_http_sources = cache_http_sources;
         }
 
+        let raw_hints =
+            Reflect::get(&raw, &JsValue::from_str("pipeline_hints_bin")).map_err(js_io)?;
+        if !raw_hints.is_undefined() && !raw_hints.is_null() {
+            let hint_bytes = prop_bytes(&raw, "pipeline_hints_bin")?;
+            let hints = decode_pipeline_hints(&hint_bytes).map_err(|err| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!("decode pipeline hints payload: {err}"),
+                )
+            })?;
+            options.pipeline_hints = Some(hints);
+        }
+
         let raw_policy = Reflect::get(&raw, &JsValue::from_str("cache_policy")).map_err(js_io)?;
         if !raw_policy.is_undefined() && !raw_policy.is_null() {
             let policy = raw_policy.as_string().ok_or_else(|| {
@@ -614,10 +651,24 @@ mod wasm {
 
     fn pipeline_endpoint_key(identity: &str, options: &OpenWebPipelineOptions) -> String {
         format!(
-            "{identity}:block_size={}:cache_policy={}",
+            "{identity}:block_size={}:cache_policy={}:{}",
             options.image_block_size,
-            effective_cache_policy(options)
+            effective_cache_policy(options),
+            pipeline_hints_cache_key(options)
         )
+    }
+
+    fn pipeline_hints_cache_key(options: &OpenWebPipelineOptions) -> String {
+        let Some(hints) = options.pipeline_hints.as_ref() else {
+            return "hints=none".to_string();
+        };
+        let encoded = match encode_pipeline_hints(hints) {
+            Ok(encoded) => encoded,
+            Err(err) => return format!("hints=invalid:{err}"),
+        };
+        let mut hasher = BlockIdentityHasher32::new();
+        hasher.write(encoded.as_slice());
+        format!("hints={}:{}", encoded.len(), hasher.finish() as u32)
     }
 
     fn parse_worker_metadata(data: &JsValue) -> GibbloxResult<WorkerMetadata> {

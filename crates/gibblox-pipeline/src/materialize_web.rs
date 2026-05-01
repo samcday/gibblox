@@ -13,13 +13,17 @@ use gibblox_core::{
 };
 use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
+use gibblox_tar::{TarEntryByteReader, TarEntryByteReaderConfig};
 use gibblox_xz::{XzBlockReader, XzBlockReaderConfig};
 use tracing::warn;
 use url::Url;
 
-use crate::materialize_common::derive_casync_chunk_store_url;
+use crate::materialize_common::{
+    android_sparse_index_hint, derive_casync_chunk_store_url, tar_entry_index_hint,
+};
 use crate::{
-    PipelineCachePolicy, PipelineSource, PipelineSourceCasyncSource, pipeline_identity_string,
+    PipelineCachePolicy, PipelineHints, PipelineSource, PipelineSourceCasyncSource,
+    pipeline_identity_string,
 };
 
 type DynBlockReader = Arc<dyn BlockReader>;
@@ -30,6 +34,7 @@ pub struct OpenPipelineOptions {
     pub image_block_size: u32,
     pub cache_policy: Option<PipelineCachePolicy>,
     pub cache_http_sources: bool,
+    pub pipeline_hints: Option<PipelineHints>,
 }
 
 impl Default for OpenPipelineOptions {
@@ -38,6 +43,7 @@ impl Default for OpenPipelineOptions {
             image_block_size: 512,
             cache_policy: None,
             cache_http_sources: true,
+            pipeline_hints: None,
         }
     }
 }
@@ -76,13 +82,38 @@ fn resolve_pipeline_source<'a>(
                 let reader: DynBlockReader = Arc::new(reader);
                 Ok(reader)
             }
+            PipelineSource::Tar(source) => {
+                let upstream =
+                    resolve_pipeline_byte_source(source.tar.source.as_ref(), opts).await?;
+                let stage = PipelineSource::Tar(source.clone());
+                let config = TarEntryByteReaderConfig::new(source.tar.entry.as_str())?
+                    .with_source_identity(source_identity(source.tar.source.as_ref()));
+                let reader = if let Some(index) =
+                    tar_entry_index_hint(opts.pipeline_hints.as_ref(), &stage)
+                {
+                    TarEntryByteReader::open_with_index(upstream, config, index).await?
+                } else {
+                    TarEntryByteReader::open_with_config(upstream, config).await?
+                };
+                let reader = BlockByteReader::new(reader, opts.image_block_size)?;
+                let reader: DynBlockReader = Arc::new(reader);
+                Ok(reader)
+            }
             PipelineSource::AndroidSparseImg(source) => {
                 let upstream =
                     resolve_pipeline_source(source.android_sparseimg.source.as_ref(), opts).await?;
+                let stage = PipelineSource::AndroidSparseImg(source.clone());
                 let config = AndroidSparseBlockReaderConfig::default().with_source_identity(
                     source_identity(source.android_sparseimg.source.as_ref()),
                 );
-                let reader = AndroidSparseBlockReader::new_with_config(upstream, config).await?;
+                let reader = if let Some(index) =
+                    android_sparse_index_hint(opts.pipeline_hints.as_ref(), &stage)
+                {
+                    AndroidSparseBlockReader::new_with_index_and_config(upstream, index, config)
+                        .await?
+                } else {
+                    AndroidSparseBlockReader::new_with_config(upstream, config).await?
+                };
                 let reader: Arc<dyn BlockReader> = Arc::new(reader);
                 Ok(reader)
             }
@@ -143,6 +174,21 @@ fn resolve_pipeline_byte_source<'a>(
                 let config = XzBlockReaderConfig::default()
                     .with_source_identity(source_identity(source.xz.as_ref()));
                 let reader = XzBlockReader::open_with_byte_reader_config(upstream, config).await?;
+                Ok(Arc::new(reader) as DynByteReader)
+            }
+            PipelineSource::Tar(source) => {
+                let upstream =
+                    resolve_pipeline_byte_source(source.tar.source.as_ref(), opts).await?;
+                let stage = PipelineSource::Tar(source.clone());
+                let config = TarEntryByteReaderConfig::new(source.tar.entry.as_str())?
+                    .with_source_identity(source_identity(source.tar.source.as_ref()));
+                let reader = if let Some(index) =
+                    tar_entry_index_hint(opts.pipeline_hints.as_ref(), &stage)
+                {
+                    TarEntryByteReader::open_with_index(upstream, config, index).await?
+                } else {
+                    TarEntryByteReader::open_with_config(upstream, config).await?
+                };
                 Ok(Arc::new(reader) as DynByteReader)
             }
             _ => {

@@ -10,6 +10,7 @@ members = [
     "crates/gibblox-core",
     "crates/gibblox-android-sparse",
     "crates/gibblox-zip",
+    "crates/gibblox-tar",
     "crates/gibblox-xz",
     "crates/gibblox-casync",
     "crates/gibblox-casync-std",
@@ -26,6 +27,7 @@ members = [
     "crates/gibblox-blockreader-messageport",
     "crates/gibblox-web-worker",
     "crates/gibblox-pipeline",
+    "crates/gibblox-optimizer",
 ]
 
 [workspace.package]
@@ -48,6 +50,7 @@ gobblytes-fat = { version = "0.0.2-rc.1", path = "crates/gobblytes-fat" }
 gibblox-core = { version = "0.0.2-rc.1", path = "crates/gibblox-core" }
 gibblox-android-sparse = { version = "0.0.2-rc.1", path = "crates/gibblox-android-sparse" }
 gibblox-zip = { version = "0.0.2-rc.1", path = "crates/gibblox-zip" }
+gibblox-tar = { version = "0.0.2-rc.1", path = "crates/gibblox-tar" }
 gibblox-xz = { version = "0.0.2-rc.1", path = "crates/gibblox-xz" }
 gibblox-casync = { version = "0.0.2-rc.1", path = "crates/gibblox-casync" }
 gibblox-casync-std = { version = "0.0.2-rc.1", path = "crates/gibblox-casync-std" }
@@ -64,6 +67,7 @@ gibblox-cache-store-opfs = { version = "0.0.2-rc.1", path = "crates/gibblox-cach
 gibblox-blockreader-messageport = { version = "0.0.2-rc.1", path = "crates/gibblox-blockreader-messageport" }
 gibblox-web-worker = { version = "0.0.2-rc.1", path = "crates/gibblox-web-worker" }
 gibblox-pipeline = { version = "0.0.2-rc.1", path = "crates/gibblox-pipeline" }
+gibblox-optimizer = { version = "0.0.2-rc.1", path = "crates/gibblox-optimizer" }
 async-trait = "0.1.89"
 bitflags = "2"
 bytes = { version = "1", default-features = false }

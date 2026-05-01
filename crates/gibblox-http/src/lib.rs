@@ -9,8 +9,14 @@ use gibblox_core::{
     ReadContext,
 };
 use std::ops::RangeInclusive;
+use std::time::Duration;
 use tracing::debug;
 use url::Url;
+
+/// Default connect timeout when none is provided in [`HttpReaderConfig`].
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Default total-request timeout when none is provided in [`HttpReaderConfig`].
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -24,6 +30,12 @@ pub struct HttpReaderConfig {
     pub block_size: u32,
     pub size_bytes: Option<u64>,
     pub cors_safelisted_mode: bool,
+    /// TCP/TLS connect timeout. `None` selects [`DEFAULT_CONNECT_TIMEOUT`].
+    /// Ignored on wasm targets.
+    pub connect_timeout: Option<Duration>,
+    /// Total per-request timeout (covers connect + headers + body).
+    /// `None` selects [`DEFAULT_REQUEST_TIMEOUT`]. Ignored on wasm targets.
+    pub request_timeout: Option<Duration>,
 }
 
 impl HttpReaderConfig {
@@ -33,6 +45,8 @@ impl HttpReaderConfig {
             block_size,
             size_bytes: None,
             cors_safelisted_mode: false,
+            connect_timeout: None,
+            request_timeout: None,
         }
     }
 
@@ -42,11 +56,23 @@ impl HttpReaderConfig {
             block_size,
             size_bytes: Some(size_bytes),
             cors_safelisted_mode: false,
+            connect_timeout: None,
+            request_timeout: None,
         }
     }
 
     pub fn with_cors_safelisted_mode(mut self, enabled: bool) -> Self {
         self.cors_safelisted_mode = enabled;
+        self
+    }
+
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
+        self
+    }
+
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = Some(timeout);
         self
     }
 
@@ -78,7 +104,7 @@ impl HttpReader {
     /// Construct a new HTTP source from config.
     pub async fn open(config: HttpReaderConfig) -> GibbloxResult<Self> {
         config.validate()?;
-        let client = HttpClient::new()?;
+        let client = HttpClient::new(&config)?;
         let size_bytes = if let Some(size_bytes) = config.size_bytes {
             size_bytes
         } else {
@@ -198,13 +224,17 @@ enum HttpClient {
 }
 
 impl HttpClient {
-    fn new() -> GibbloxResult<Self> {
+    fn new(config: &HttpReaderConfig) -> GibbloxResult<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            Ok(HttpClient::Native(native::Client::new()?))
+            Ok(HttpClient::Native(native::Client::new(
+                config.connect_timeout.unwrap_or(DEFAULT_CONNECT_TIMEOUT),
+                config.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
+            )?))
         }
         #[cfg(target_arch = "wasm32")]
         {
+            let _ = config;
             Ok(HttpClient::Wasm(wasm::Client::new()?))
         }
     }

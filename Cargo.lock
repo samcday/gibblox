@@ -752,6 +752,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gibblox-core",
+ "gibblox-optimizer",
  "gibblox-pipeline",
  "serde_yaml",
  "tokio",
@@ -837,6 +838,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-optimizer"
+version = "0.0.2-rc.1"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gibblox-android-sparse",
+ "gibblox-core",
+ "gibblox-pipeline",
+ "gibblox-tar",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-pipeline"
 version = "0.0.2-rc.1"
 dependencies = [
@@ -854,6 +868,7 @@ dependencies = [
  "gibblox-http",
  "gibblox-mbr",
  "gibblox-schema",
+ "gibblox-tar",
  "gibblox-xz",
  "postcard",
  "serde",
@@ -888,6 +903,16 @@ version = "0.0.2-rc.1"
 dependencies = [
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "gibblox-tar"
+version = "0.0.2-rc.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
 ]
 
 [[package]]

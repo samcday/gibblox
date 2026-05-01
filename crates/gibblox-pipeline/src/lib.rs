@@ -12,7 +12,8 @@ use gibblox_core::{BlockReaderConfigIdentity, config_identity_string, derive_con
 use serde::{Deserialize, Serialize};
 
 use crate::bin::{
-    PIPELINE_BIN_FORMAT_VERSION, PIPELINE_BIN_HEADER_LEN, PIPELINE_BIN_MAGIC, PipelineSourceBin,
+    PIPELINE_BIN_FORMAT_VERSION, PIPELINE_BIN_HEADER_LEN, PIPELINE_BIN_MAGIC,
+    PIPELINE_BIN_SUPPORTED_VERSIONS, PipelineSourceBin,
 };
 
 pub use gibblox_schema::bin::{
@@ -21,8 +22,9 @@ pub use gibblox_schema::bin::{
 pub use gibblox_schema::{
     PipelineAndroidSparseChunkIndexHint, PipelineAndroidSparseIndexHint, PipelineContentDigestHint,
     PipelineHint, PipelineHintEntry, PipelineHints, PipelineHintsCodecError,
-    PipelineHintsValidationError, decode_pipeline_hints, decode_pipeline_hints_prefix,
-    encode_pipeline_hints, pipeline_hints_bin_header_version, validate_pipeline_hints,
+    PipelineHintsValidationError, PipelineTarEntryIndexHint, decode_pipeline_hints,
+    decode_pipeline_hints_prefix, encode_pipeline_hints, pipeline_hints_bin_header_version,
+    validate_pipeline_hints,
 };
 
 pub mod bin;
@@ -63,7 +65,7 @@ impl fmt::Display for PipelineCodecError {
             }
             Self::UnsupportedFormatVersion(version) => write!(
                 f,
-                "unsupported pipeline format version {version} (expected {PIPELINE_BIN_FORMAT_VERSION})"
+                "unsupported pipeline format version {version} (supported {PIPELINE_BIN_SUPPORTED_VERSIONS:?})"
             ),
         }
     }
@@ -84,14 +86,10 @@ pub fn decode_pipeline(bytes: &[u8]) -> Result<PipelineSource, PipelineCodecErro
     };
 
     let payload = &bytes[PIPELINE_BIN_HEADER_LEN..];
-    let pipeline = match format_version {
-        3 => postcard::from_bytes::<PipelineSourceBin>(payload)?,
-        2 => {
-            let v2: bin::PipelineSourceBinV2 = postcard::from_bytes(payload)?;
-            PipelineSourceBin::from(v2)
-        }
-        _ => return Err(PipelineCodecError::UnsupportedFormatVersion(format_version)),
-    };
+    if !PIPELINE_BIN_SUPPORTED_VERSIONS.contains(&format_version) {
+        return Err(PipelineCodecError::UnsupportedFormatVersion(format_version));
+    }
+    let pipeline = postcard::from_bytes::<PipelineSourceBin>(payload)?;
     Ok(PipelineSource::from(pipeline))
 }
 
@@ -155,6 +153,7 @@ pub enum PipelineValidationError {
     EmptyFile,
     EmptyCasyncIndex,
     EmptyCasyncChunkStore,
+    EmptyTarEntry,
     MissingHttpContent,
     MissingFileContent,
     MissingCasyncContent,
@@ -180,6 +179,7 @@ impl fmt::Display for PipelineValidationError {
             Self::EmptyCasyncChunkStore => {
                 write!(f, "pipeline casync.chunk_store source must not be empty")
             }
+            Self::EmptyTarEntry => write!(f, "pipeline tar.entry must not be empty"),
             Self::MissingHttpContent => {
                 write!(f, "pipeline http source must include content metadata")
             }
@@ -295,6 +295,15 @@ fn validate_pipeline_source(
                 validate_pipeline_content(content)?;
             }
             validate_pipeline_source(source.xz.as_ref(), depth + 1)
+        }
+        PipelineSource::Tar(source) => {
+            if source.tar.entry.trim().is_empty() {
+                return Err(PipelineValidationError::EmptyTarEntry);
+            }
+            if let Some(content) = source.tar.content.as_ref() {
+                validate_pipeline_content(content)?;
+            }
+            validate_pipeline_source(source.tar.source.as_ref(), depth + 1)
         }
         PipelineSource::AndroidSparseImg(source) => {
             if let Some(content) = source.android_sparseimg.content.as_ref() {
@@ -423,6 +432,13 @@ fn write_pipeline_identity(source: &PipelineSource, out: &mut dyn fmt::Write) ->
             write_pipeline_identity(source.xz.as_ref(), out)?;
             out.write_str("}")
         }
+        PipelineSource::Tar(source) => {
+            out.write_str("tar{")?;
+            write_string_field(out, "entry", source.tar.entry.as_str())?;
+            out.write_str("source=")?;
+            write_pipeline_identity(source.tar.source.as_ref(), out)?;
+            out.write_str("}")
+        }
         PipelineSource::AndroidSparseImg(source) => {
             out.write_str("android_sparseimg{source=")?;
             write_pipeline_identity(source.android_sparseimg.source.as_ref(), out)?;
@@ -494,6 +510,7 @@ pub enum PipelineSource {
     Http(PipelineSourceHttpSource),
     File(PipelineSourceFileSource),
     Xz(PipelineSourceXzSource),
+    Tar(PipelineSourceTarSource),
     AndroidSparseImg(PipelineSourceAndroidSparseImgSource),
     Mbr(PipelineSourceMbrSource),
     Gpt(PipelineSourceGptSource),
@@ -578,6 +595,22 @@ pub struct PipelineSourceXzSource {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct PipelineSourceTarSource {
+    #[serde(deserialize_with = "deserialize_tar_source")]
+    pub tar: PipelineSourceTar,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PipelineSourceTar {
+    pub entry: String,
+    #[serde(flatten)]
+    pub source: Box<PipelineSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<PipelineSourceContent>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineSourceAndroidSparseImgSource {
     #[serde(deserialize_with = "deserialize_android_sparseimg_source")]
     pub android_sparseimg: PipelineSourceAndroidSparseImg,
@@ -608,6 +641,47 @@ where
     Ok(match value {
         NestedPipelineSourceValue::Direct(source) => source,
         NestedPipelineSourceValue::Source { source } => source,
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum PipelineSourceTarValue {
+    Flatten {
+        entry: String,
+        #[serde(flatten)]
+        source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
+    },
+    Source {
+        entry: String,
+        source: Box<PipelineSource>,
+        #[serde(default)]
+        content: Option<PipelineSourceContent>,
+    },
+}
+
+fn deserialize_tar_source<'de, D>(deserializer: D) -> Result<PipelineSourceTar, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = PipelineSourceTarValue::deserialize(deserializer)?;
+    Ok(match value {
+        PipelineSourceTarValue::Flatten {
+            entry,
+            source,
+            content,
+        }
+        | PipelineSourceTarValue::Source {
+            entry,
+            source,
+            content,
+        } => PipelineSourceTar {
+            entry,
+            source,
+            content,
+        },
     })
 }
 
@@ -815,10 +889,10 @@ mod tests {
         MAX_PIPELINE_DEPTH, PipelineCodecError, PipelineSource, PipelineSourceAndroidSparseImg,
         PipelineSourceAndroidSparseImgSource, PipelineSourceCasync, PipelineSourceCasyncSource,
         PipelineSourceContent, PipelineSourceGpt, PipelineSourceGptSource,
-        PipelineSourceHttpSource, PipelineSourceMbr, PipelineSourceMbrSource,
-        PipelineSourceXzSource, PipelineValidationError, decode_pipeline, encode_pipeline,
-        pipeline_bin_header_version, pipeline_identity_id, pipeline_identity_string,
-        validate_pipeline,
+        PipelineSourceHttpSource, PipelineSourceMbr, PipelineSourceMbrSource, PipelineSourceTar,
+        PipelineSourceTarSource, PipelineSourceXzSource, PipelineValidationError, decode_pipeline,
+        encode_pipeline, pipeline_bin_header_version, pipeline_identity_id,
+        pipeline_identity_string, validate_pipeline,
     };
 
     fn sample_content() -> PipelineSourceContent {
@@ -888,6 +962,55 @@ gpt:
                 assert_eq!(source.gpt.partlabel.as_deref(), Some("rootfs"));
             }
             other => panic!("expected gpt source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validates_and_roundtrips_tar_pipeline() {
+        let source = PipelineSource::Tar(PipelineSourceTarSource {
+            tar: PipelineSourceTar {
+                entry: String::from("/rootfs.img"),
+                source: Box::new(PipelineSource::Xz(PipelineSourceXzSource {
+                    xz: Box::new(PipelineSource::Http(PipelineSourceHttpSource {
+                        http: String::from("https://cdn.example.invalid/rootfs.tar.xz"),
+                        cors_safelisted_mode: false,
+                        content: Some(sample_content()),
+                    })),
+                    content: None,
+                })),
+                content: None,
+            },
+        });
+
+        validate_pipeline(&source).expect("tar pipeline should validate");
+        let encoded = encode_pipeline(&source).expect("encode pipeline");
+        let decoded = decode_pipeline(&encoded).expect("decode pipeline");
+        assert_eq!(decoded, source);
+    }
+
+    #[test]
+    fn parses_tar_source_style_yaml_pipeline() {
+        let source: PipelineSource = serde_yaml::from_str(
+            r#"
+tar:
+  entry: /rootfs.img
+  source:
+    xz:
+      source:
+        http: https://cdn.example.invalid/rootfs.tar.xz
+        content:
+          digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+          size_bytes: 123
+"#,
+        )
+        .expect("parse tar source-style YAML");
+
+        validate_pipeline(&source).expect("tar source-style pipeline should validate");
+        match source {
+            PipelineSource::Tar(source) => {
+                assert_eq!(source.tar.entry.as_str(), "/rootfs.img");
+            }
+            other => panic!("expected tar source, got {other:?}"),
         }
     }
 
@@ -1004,43 +1127,7 @@ gpt:
         });
         let bytes = encode_pipeline(&source).expect("encode pipeline");
 
-        assert_eq!(pipeline_bin_header_version(&bytes), Some(3));
-    }
-
-    #[test]
-    fn decodes_v2_payload_with_lba_size_none() {
-        // Build a v2-shaped GPT payload by hand: encode it via the v2 mirror
-        // struct in `bin`, slap on the v=2 header, then decode through the
-        // public path and assert the lba_size field defaults to None.
-        let v2 = crate::bin::PipelineSourceBinV2::Gpt {
-            partlabel: None,
-            partuuid: Some(String::from("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")),
-            index: None,
-            source: Box::new(crate::bin::PipelineSourceBinV2::Http {
-                url: String::from("https://cdn.example.invalid/rootfs.img"),
-                cors_safelisted_mode: false,
-                content: Some(sample_content()),
-            }),
-            content: None,
-        };
-        let payload = postcard::to_allocvec(&v2).expect("encode v2");
-
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&crate::bin::PIPELINE_BIN_MAGIC);
-        bytes.extend_from_slice(&2u16.to_le_bytes());
-        bytes.extend_from_slice(&payload);
-
-        let decoded = decode_pipeline(&bytes).expect("decode v2 payload");
-        match decoded {
-            PipelineSource::Gpt(g) => {
-                assert_eq!(g.gpt.lba_size, None);
-                assert_eq!(
-                    g.gpt.partuuid.as_deref(),
-                    Some("31b7f334-6df8-4f95-b4b0-c8653f8f8fbf")
-                );
-            }
-            other => panic!("expected gpt, got {other:?}"),
-        }
+        assert_eq!(pipeline_bin_header_version(&bytes), Some(0));
     }
 
     #[test]

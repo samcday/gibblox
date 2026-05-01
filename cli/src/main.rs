@@ -8,9 +8,11 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use gibblox_core::{BlockReader, ReadContext, WindowBlockReader};
+use gibblox_optimizer::{PipelineOptimizeOptions, optimize_pipeline_hints};
 use gibblox_pipeline::{
-    OpenPipelineOptions, PipelineCachePolicy, PipelineSource, decode_pipeline, encode_pipeline,
-    open_pipeline, pipeline_bin_header_version, validate_pipeline,
+    OpenPipelineOptions, PipelineCachePolicy, PipelineSource, decode_pipeline,
+    decode_pipeline_hints, encode_pipeline, encode_pipeline_hints, open_pipeline,
+    pipeline_bin_header_version, validate_pipeline,
 };
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -63,6 +65,9 @@ struct Cli {
     /// Cache placement policy (`none`, `head`, or `tail`).
     #[arg(long, value_name = "POLICY", value_enum, requires = "pipeline")]
     cache_policy: Option<CliCachePolicy>,
+    /// Raw GBXHINT0 pipeline hints path ("-" for stdin).
+    #[arg(long, value_name = "HINTS", requires = "pipeline")]
+    hints: Option<String>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -87,6 +92,8 @@ enum PipelineCommand {
     Decode(PipelineDecodeArgs),
     /// Validate a pipeline input (YAML by default).
     Validate(PipelineValidateArgs),
+    /// Emit raw GBXHINT0 pipeline hints for a pipeline input.
+    Optimize(PipelineOptimizeArgs),
 }
 
 #[derive(Args)]
@@ -119,6 +126,16 @@ struct PipelineValidateArgs {
     binary: bool,
 }
 
+#[derive(Args)]
+struct PipelineOptimizeArgs {
+    /// Input YAML or binary file ("-" for stdin).
+    #[arg(value_name = "INPUT", default_value = "-")]
+    input: String,
+    /// Output GBXHINT0 binary file ("-" for stdout).
+    #[arg(short = 'o', long, default_value = "-")]
+    output: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing()?;
@@ -131,10 +148,11 @@ async fn main() -> Result<()> {
             || cli.start.is_some()
             || cli.count.is_some()
             || cli.blocksize.is_some()
-            || cli.cache_policy.is_some())
+            || cli.cache_policy.is_some()
+            || cli.hints.is_some())
     {
         bail!(
-            "PIPELINE, --output, --start, --count, --blocksize, and --cache-policy cannot be used with subcommands"
+            "PIPELINE, --output, --start, --count, --blocksize, --cache-policy, and --hints cannot be used with subcommands"
         );
     }
 
@@ -152,6 +170,7 @@ async fn main() -> Result<()> {
                 cli.count,
                 cli.blocksize,
                 cli.cache_policy,
+                cli.hints.as_deref(),
             )
             .await
         }
@@ -180,12 +199,16 @@ async fn run_default_pipeline_execute(
     count_blocks: Option<u64>,
     requested_block_size: Option<u32>,
     cache_policy: Option<CliCachePolicy>,
+    hints_path: Option<&str>,
 ) -> Result<()> {
     validate_binary_output(
         output_path,
         "gibblox pipeline",
         std::io::stdout().is_terminal(),
     )?;
+    if input_path == "-" && hints_path == Some("-") {
+        bail!("PIPELINE and --hints cannot both read from stdin");
+    }
 
     let output_block_size = requested_block_size.unwrap_or(DEFAULT_IMAGE_BLOCK_SIZE);
     validate_image_block_size(output_block_size)?;
@@ -197,12 +220,14 @@ async fn run_default_pipeline_execute(
     let source = parse_pipeline_document(&input, input_path)?;
     validate_pipeline(&source)
         .with_context(|| format!("validate pipeline input {}", io_label(input_path)))?;
+    let pipeline_hints = read_optional_pipeline_hints(hints_path)?;
 
     let reader = open_pipeline(
         &source,
         &OpenPipelineOptions {
             image_block_size: DEFAULT_SOURCE_BLOCK_SIZE,
             cache_policy,
+            pipeline_hints,
             ..OpenPipelineOptions::default()
         },
     )
@@ -216,6 +241,7 @@ async fn run_pipeline(command: PipelineCommand) -> Result<()> {
         PipelineCommand::Encode(args) => run_pipeline_encode(args),
         PipelineCommand::Decode(args) => run_pipeline_decode(args),
         PipelineCommand::Validate(args) => run_pipeline_validate(args),
+        PipelineCommand::Optimize(args) => run_pipeline_optimize(args).await,
     }
 }
 
@@ -258,11 +284,50 @@ fn run_pipeline_validate(args: PipelineValidateArgs) -> Result<()> {
     Ok(())
 }
 
+async fn run_pipeline_optimize(args: PipelineOptimizeArgs) -> Result<()> {
+    validate_binary_output(
+        &args.output,
+        "gibblox pipeline optimize",
+        std::io::stdout().is_terminal(),
+    )?;
+    let input = read_input_bytes(&args.input)
+        .with_context(|| format!("read pipeline optimize input {}", io_label(&args.input)))?;
+    let source = parse_pipeline_document(&input, &args.input)?;
+    validate_pipeline(&source)
+        .with_context(|| format!("validate pipeline input {}", io_label(&args.input)))?;
+    let hints = optimize_pipeline_hints(
+        &source,
+        &PipelineOptimizeOptions {
+            image_block_size: DEFAULT_SOURCE_BLOCK_SIZE,
+            ..PipelineOptimizeOptions::default()
+        },
+    )
+    .await
+    .context("optimize pipeline hints")?;
+    let encoded =
+        encode_pipeline_hints(&hints).map_err(|err| anyhow!("encode pipeline hints: {err}"))?;
+    write_binary_output(&args.output, &encoded, "gibblox pipeline optimize")
+}
+
 fn read_pipeline_yaml(path: &str) -> Result<PipelineSource> {
     let input = read_input_bytes(path)
         .with_context(|| format!("read pipeline YAML input {}", io_label(path)))?;
     serde_yaml::from_slice(&input)
         .with_context(|| format!("parse pipeline YAML input {}", io_label(path)))
+}
+
+fn read_optional_pipeline_hints(
+    path: Option<&str>,
+) -> Result<Option<gibblox_pipeline::PipelineHints>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+
+    let input = read_input_bytes(path)
+        .with_context(|| format!("read pipeline hints input {}", io_label(path)))?;
+    decode_pipeline_hints(&input)
+        .map(Some)
+        .map_err(|err| anyhow!("decode pipeline hints input {}: {err}", io_label(path)))
 }
 
 fn parse_pipeline_document(input: &[u8], label: &str) -> Result<PipelineSource> {
@@ -511,6 +576,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_top_level_pipeline_hints() {
+        let cli = Cli::parse_from([
+            "gibblox-cli",
+            "pipeline.yaml",
+            "--hints",
+            "pipeline.gbxhint0",
+        ]);
+        assert_eq!(cli.pipeline.as_deref(), Some("pipeline.yaml"));
+        assert_eq!(cli.hints.as_deref(), Some("pipeline.gbxhint0"));
+    }
+
+    #[test]
     fn parse_validate_with_positional_input() {
         let cli = Cli::parse_from(["gibblox-cli", "pipeline", "validate", "/tmp/lol"]);
         assert!(matches!(cli.command, Some(super::Commands::Pipeline(_))));
@@ -560,6 +637,26 @@ mod tests {
         };
         assert_eq!(args.input, "in.yaml");
         assert_eq!(args.output, "out.bin");
+    }
+
+    #[test]
+    fn parse_pipeline_optimize_custom_paths() {
+        let cli = Cli::parse_from([
+            "gibblox-cli",
+            "pipeline",
+            "optimize",
+            "in.yaml",
+            "-o",
+            "hints.bin",
+        ]);
+        let super::Commands::Pipeline(PipelineArgs {
+            command: PipelineCommand::Optimize(args),
+        }) = cli.command.expect("command is present")
+        else {
+            panic!("expected pipeline optimize command")
+        };
+        assert_eq!(args.input, "in.yaml");
+        assert_eq!(args.output, "hints.bin");
     }
 
     #[test]

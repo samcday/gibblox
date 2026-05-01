@@ -28,6 +28,7 @@ pub struct PipelineHintEntry {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum PipelineHint {
     AndroidSparseIndex(PipelineAndroidSparseIndexHint),
+    TarEntryIndex(PipelineTarEntryIndexHint),
     ContentDigest(PipelineContentDigestHint),
 }
 
@@ -63,6 +64,15 @@ pub struct PipelineAndroidSparseChunkIndexHint {
     pub crc32: Option<u32>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PipelineTarEntryIndexHint {
+    pub entry_name: String,
+    pub header_offset: u64,
+    pub data_offset: u64,
+    pub size_bytes: u64,
+    pub entry_type: u8,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PipelineHintsValidationError {
     EmptyIdentity,
@@ -77,6 +87,9 @@ pub enum PipelineHintsValidationError {
         pipeline_identity: String,
     },
     DuplicateHintTypeAndroidSparseIndex {
+        pipeline_identity: String,
+    },
+    DuplicateHintTypeTarEntryIndex {
         pipeline_identity: String,
     },
     DuplicateHintTypeContentDigest {
@@ -106,6 +119,10 @@ impl fmt::Display for PipelineHintsValidationError {
             Self::DuplicateHintTypeAndroidSparseIndex { pipeline_identity } => write!(
                 f,
                 "pipeline hint entry '{pipeline_identity}' contains duplicate AndroidSparseIndex hints"
+            ),
+            Self::DuplicateHintTypeTarEntryIndex { pipeline_identity } => write!(
+                f,
+                "pipeline hint entry '{pipeline_identity}' contains duplicate TarEntryIndex hints"
             ),
             Self::DuplicateHintTypeContentDigest { pipeline_identity } => write!(
                 f,
@@ -186,6 +203,7 @@ pub fn validate_pipeline_hints(hints: &PipelineHints) -> Result<(), PipelineHint
         }
 
         let mut seen_android_sparse = false;
+        let mut seen_tar_entry = false;
         let mut seen_content_digest = false;
         for hint in &entry.hints {
             match hint {
@@ -198,6 +216,16 @@ pub fn validate_pipeline_hints(hints: &PipelineHints) -> Result<(), PipelineHint
                         );
                     }
                     seen_android_sparse = true;
+                }
+                PipelineHint::TarEntryIndex(_) => {
+                    if seen_tar_entry {
+                        return Err(
+                            PipelineHintsValidationError::DuplicateHintTypeTarEntryIndex {
+                                pipeline_identity: identity.to_string(),
+                            },
+                        );
+                    }
+                    seen_tar_entry = true;
                 }
                 PipelineHint::ContentDigest(_) => {
                     if seen_content_digest {
