@@ -390,8 +390,8 @@ fn select_partition_entry(
             SelectedPartition {
                 index: *index,
                 partition_type: partition.part_type,
-                first_lba: partition.start_lba,
-                sector_count: partition.sector_count,
+                first_lba: partition.start_lba.into(),
+                sector_count: partition.sector_count.into(),
             }
         }
         MbrPartitionSelector::PartUuid(raw_uuid) => {
@@ -415,8 +415,8 @@ fn select_partition_entry(
             SelectedPartition {
                 index: u32::from(target_partition_number - 1),
                 partition_type: partition.part_type,
-                first_lba: partition.start_lba,
-                sector_count: partition.sector_count,
+                first_lba: partition.start_lba.into(),
+                sector_count: partition.sector_count.into(),
             }
         }
     };

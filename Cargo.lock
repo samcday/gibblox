@@ -406,6 +406,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "endian-num"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b4a54dfedecb1dc004776a597db0c858cf6c31579296734511309291b8399ce"
+dependencies = [
+ "bytemuck",
+ "bytemuck_derive",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -444,9 +454,9 @@ dependencies = [
 
 [[package]]
 name = "ext4plus"
-version = "0.1.0-alpha.7"
+version = "0.1.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dc277b4b40b9c396d5519685fa08c9feada784011646ce7f40fa8ec68baf8e5"
+checksum = "a5c547ae17a36e85c24321eb151a6dfd4818829973f90937f3b07259dd181a08"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1067,9 +1077,9 @@ dependencies = [
 
 [[package]]
 name = "hadris-io"
-version = "1.0.1"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1168755badc3b0c63b3c02f5db27f4b34c06828a208e1a30866cdd8217019af"
+checksum = "a0e6c5ab7e56eeef44f4aaee489bcec9fee52b329cfd1b4388799bb35ee69654"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -1077,20 +1087,21 @@ dependencies = [
 
 [[package]]
 name = "hadris-macros"
-version = "1.0.1"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af87dad5059eb288d6c8a3e539146136f55464ad16ecc5b72b8334e9f33019a6"
+checksum = "c391784dcf01c2711219a7a614c71f62fe16284b00f96e8be9ed882f1b82e116"
 dependencies = [
  "proc-macro2",
 ]
 
 [[package]]
 name = "hadris-part"
-version = "1.0.1"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1955de1ac95fb0b4db1a1758e08d1f6347a7c4404cd3dcf96990ab628d483148"
+checksum = "0cb3607019e2e71d3ea1705432f1b48757ad1e3cfd3b4b76f234af0372dd1539"
 dependencies = [
  "bytemuck",
+ "endian-num",
  "hadris-io",
  "hadris-macros",
 ]

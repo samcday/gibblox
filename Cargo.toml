@@ -87,4 +87,5 @@ wasm-bindgen = "0.2.105"
 wasm-bindgen-futures = "0.4.55"
 web-sys = "0.3.82"
 erofs-rs = { package = "gobblytes-erofs-rs", version = "0.1.1", path = "erofs-rs/erofs", default-features = false }
-ext4plus = { version = "0.1.0-alpha.7", default-features = false }
+# ext4plus and hadris-part have both been offenders in the past; keep exact pins while they are on probationary monitoring.
+ext4plus = { version = "=0.1.0-beta.4", default-features = false, features = ["multi-threaded"] }
