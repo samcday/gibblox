@@ -13,6 +13,7 @@ gibblox-android-sparse = { workspace = true, features = ["std"] }
 gibblox-core = { workspace = true, features = ["std"] }
 gibblox-pipeline = { workspace = true, features = ["std"] }
 gibblox-tar = { workspace = true, features = ["std"] }
+sha2 = { workspace = true }
 tracing = "0.1.41"
 
 [dev-dependencies]
