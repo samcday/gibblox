@@ -1,5 +1,8 @@
 use core::{future::Future, pin::Pin};
 use std::{
+    collections::HashMap,
+    fs,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -22,7 +25,8 @@ use gibblox_http::{HttpReader, HttpReaderConfig};
 use gibblox_mbr::{MbrBlockReader, MbrBlockReaderConfig, MbrPartitionSelector};
 use gibblox_tar::{TarEntryByteReader, TarEntryByteReaderConfig};
 use gibblox_xz::XzBlockReader;
-use tracing::warn;
+use sha2::{Digest, Sha512};
+use tracing::{info, warn};
 use url::Url;
 
 use crate::materialize_common::{
@@ -30,11 +34,86 @@ use crate::materialize_common::{
 };
 use crate::{
     PipelineCachePolicy, PipelineHints, PipelineSource, PipelineSourceCasyncSource,
-    pipeline_identity_string,
+    PipelineSourceContent, pipeline_identity_string,
 };
 
 pub type DynBlockReader = Arc<dyn BlockReader>;
 type DynByteReader = Arc<dyn ByteReader>;
+
+#[derive(Clone, Debug, Default)]
+pub struct LocalArtifactIndex {
+    artifacts: HashMap<ArtifactContentKey, PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ArtifactContentKey {
+    digest: String,
+    size_bytes: u64,
+}
+
+impl LocalArtifactIndex {
+    pub fn from_paths(paths: &[PathBuf]) -> Result<Self> {
+        let mut index = Self::default();
+        for path in paths {
+            let canonical = fs::canonicalize(path)
+                .with_context(|| format!("canonicalize local artifact path {}", path.display()))?;
+            let metadata = fs::metadata(&canonical)
+                .with_context(|| format!("stat local artifact {}", canonical.display()))?;
+            if !metadata.is_file() {
+                bail!(
+                    "local artifact {} is not a regular file",
+                    canonical.display()
+                );
+            }
+
+            let content = PipelineSourceContent {
+                digest: sha512_file(&canonical)?,
+                size_bytes: metadata.len(),
+            };
+            index.insert_content_path(content, canonical)?;
+        }
+        Ok(index)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.artifacts.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.artifacts.len()
+    }
+
+    pub fn insert_content_path(
+        &mut self,
+        content: PipelineSourceContent,
+        path: PathBuf,
+    ) -> Result<()> {
+        let key = ArtifactContentKey {
+            digest: content.digest,
+            size_bytes: content.size_bytes,
+        };
+        if let Some(existing) = self.artifacts.get(&key) {
+            if existing != &path {
+                bail!(
+                    "local artifact digest+size collision between {} and {}",
+                    existing.display(),
+                    path.display()
+                );
+            }
+            return Ok(());
+        }
+        self.artifacts.insert(key, path);
+        Ok(())
+    }
+
+    pub fn path_for_content(&self, content: &PipelineSourceContent) -> Option<&Path> {
+        let key = ArtifactContentKey {
+            digest: content.digest.clone(),
+            size_bytes: content.size_bytes,
+        };
+        self.artifacts.get(&key).map(PathBuf::as_path)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct OpenPipelineOptions {
@@ -42,6 +121,7 @@ pub struct OpenPipelineOptions {
     pub casync_cache_dir: Option<PathBuf>,
     pub cache_policy: PipelineCachePolicy,
     pub pipeline_hints: Option<PipelineHints>,
+    pub local_artifacts: Option<LocalArtifactIndex>,
 }
 
 impl Default for OpenPipelineOptions {
@@ -51,6 +131,7 @@ impl Default for OpenPipelineOptions {
             casync_cache_dir: Some(default_casync_cache_dir()),
             cache_policy: PipelineCachePolicy::None,
             pipeline_hints: None,
+            local_artifacts: None,
         }
     }
 }
@@ -68,6 +149,10 @@ pub(crate) fn open_pipeline_source<'a>(
     opts: &'a OpenPipelineOptions,
 ) -> Pin<Box<dyn Future<Output = Result<DynBlockReader>> + 'a>> {
     Box::pin(async move {
+        if let Some(reader) = open_local_artifact_block_source(source, opts)? {
+            return Ok(reader);
+        }
+
         match source {
             PipelineSource::Http(source) => {
                 let value = source.http.trim();
@@ -200,6 +285,10 @@ fn open_pipeline_byte_source<'a>(
     opts: &'a OpenPipelineOptions,
 ) -> Pin<Box<dyn Future<Output = Result<DynByteReader>> + 'a>> {
     Box::pin(async move {
+        if let Some(reader) = open_local_artifact_byte_source(source, opts)? {
+            return Ok(reader);
+        }
+
         match source {
             PipelineSource::Http(source) => {
                 let value = source.http.trim();
@@ -285,6 +374,84 @@ fn open_pipeline_byte_source<'a>(
                 Ok(Arc::new(reader) as DynByteReader)
             }
         }
+    })
+}
+
+fn open_local_artifact_block_source(
+    source: &PipelineSource,
+    opts: &OpenPipelineOptions,
+) -> Result<Option<DynBlockReader>> {
+    let Some(path) = local_artifact_path(source, opts) else {
+        return Ok(None);
+    };
+    let reader = FileReader::open(path, opts.image_block_size)
+        .map_err(|err| anyhow!("open local artifact {}: {err}", path.display()))?;
+    Ok(Some(Arc::new(reader) as DynBlockReader))
+}
+
+fn open_local_artifact_byte_source(
+    source: &PipelineSource,
+    opts: &OpenPipelineOptions,
+) -> Result<Option<DynByteReader>> {
+    let Some(path) = local_artifact_path(source, opts) else {
+        return Ok(None);
+    };
+    let reader = FileReader::open(path, opts.image_block_size)
+        .map_err(|err| anyhow!("open local artifact {}: {err}", path.display()))?;
+    Ok(Some(Arc::new(reader) as DynByteReader))
+}
+
+fn local_artifact_path<'a>(
+    source: &PipelineSource,
+    opts: &'a OpenPipelineOptions,
+) -> Option<&'a Path> {
+    let index = opts.local_artifacts.as_ref()?;
+    if index.is_empty() {
+        return None;
+    }
+
+    let identity = pipeline_identity_string(source);
+    let content = source_content(source)
+        .cloned()
+        .or_else(|| content_digest_hint(opts.pipeline_hints.as_ref(), identity.as_str()))?;
+    let path = index.path_for_content(&content)?;
+    info!(
+        pipeline_identity = %identity,
+        digest = %content.digest,
+        size_bytes = content.size_bytes,
+        local_path = %path.display(),
+        "using local artifact override"
+    );
+    Some(path)
+}
+
+fn source_content(source: &PipelineSource) -> Option<&PipelineSourceContent> {
+    match source {
+        PipelineSource::Http(source) => source.content.as_ref(),
+        PipelineSource::File(source) => source.content.as_ref(),
+        PipelineSource::Casync(source) => source.casync.content.as_ref(),
+        PipelineSource::Xz(source) => source.content.as_ref(),
+        PipelineSource::AndroidSparseImg(source) => source.android_sparseimg.content.as_ref(),
+        PipelineSource::Tar(source) => source.tar.content.as_ref(),
+        PipelineSource::Mbr(source) => source.mbr.content.as_ref(),
+        PipelineSource::Gpt(source) => source.gpt.content.as_ref(),
+    }
+}
+
+fn content_digest_hint(
+    hints: Option<&PipelineHints>,
+    identity: &str,
+) -> Option<PipelineSourceContent> {
+    let entry = hints?
+        .entries
+        .iter()
+        .find(|entry| entry.pipeline_identity == identity)?;
+    entry.hints.iter().find_map(|hint| match hint {
+        crate::PipelineHint::ContentDigest(content) => Some(PipelineSourceContent {
+            digest: content.digest.clone(),
+            size_bytes: content.size_bytes,
+        }),
+        _ => None,
     })
 }
 
@@ -448,6 +615,25 @@ fn parse_casync_chunk_store_locator(value: &str) -> Result<StdCasyncChunkStoreLo
 fn url_to_local_path(url: &Url) -> Result<PathBuf> {
     url.to_file_path()
         .map_err(|_| anyhow!("URL is not a valid local file path: {url}"))
+}
+
+fn sha512_file(path: &Path) -> Result<String> {
+    let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+    let mut hasher = Sha512::new();
+    let mut buf = [0u8; 1024 * 1024];
+
+    loop {
+        let read = reader
+            .read(&mut buf)
+            .with_context(|| format!("read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+
+    Ok(format!("sha512:{:x}", hasher.finalize()))
 }
 
 fn derive_casync_chunk_store_path(index_path: &Path) -> PathBuf {

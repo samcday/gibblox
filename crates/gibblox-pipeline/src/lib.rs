@@ -39,7 +39,7 @@ mod materialize_std;
 mod materialize_web;
 
 #[cfg(feature = "std")]
-pub use materialize_std::{OpenPipelineOptions, open_pipeline};
+pub use materialize_std::{LocalArtifactIndex, OpenPipelineOptions, open_pipeline};
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use materialize_web::{

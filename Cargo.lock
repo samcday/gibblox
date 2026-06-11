@@ -857,6 +857,7 @@ dependencies = [
  "gibblox-core",
  "gibblox-pipeline",
  "gibblox-tar",
+ "sha2",
  "tracing",
 ]
 
@@ -883,6 +884,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_yaml",
+ "sha2",
  "tracing",
  "url",
 ]
