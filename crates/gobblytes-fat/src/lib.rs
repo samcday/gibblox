@@ -269,7 +269,7 @@ impl FatFs {
                 }
                 Err(err) => return Err(map_fat_error("read FAT directory entry", err)),
             };
-            if is_dot_name(entry.name().as_ref()) || is_volume_label(&entry) {
+            if is_dot_name(entry.name()) || is_volume_label(&entry) {
                 continue;
             }
             out.push(entry.name().to_string());
@@ -339,11 +339,11 @@ impl FatFs {
                 Err(err) => return Err(map_fat_error("read FAT directory entry", err)),
             };
 
-            if is_dot_name(entry.name().as_ref()) || is_volume_label(&entry) {
+            if is_dot_name(entry.name()) || is_volume_label(&entry) {
                 continue;
             }
 
-            if fat_name_eq(entry.name().as_ref(), wanted) || entry.short_name().matches(wanted) {
+            if fat_name_eq(entry.name(), wanted) || entry.short_name().matches(wanted) {
                 return Ok(Some(entry));
             }
         }
