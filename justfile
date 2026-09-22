@@ -488,8 +488,16 @@ wasm-check:
     cargo check --target wasm32-unknown-unknown --locked -p gibblox-http --no-default-features --features wasm-client
     cargo check --target wasm32-unknown-unknown --locked -p gibblox-cache-store-opfs
 
-ci-rust: fmt check clippy test
+consumer-check:
+    python3 tools/check-hadris-consumers.py
 
-ci-wasm: wasm-check
+consumer-wasm-check:
+    python3 tools/check-hadris-consumers.py --target wasm32-unknown-unknown
+
+ci-consumers: consumer-check consumer-wasm-check
+
+ci-rust: fmt check clippy test consumer-check
+
+ci-wasm: wasm-check consumer-wasm-check
 
 ci: ci-rust ci-wasm

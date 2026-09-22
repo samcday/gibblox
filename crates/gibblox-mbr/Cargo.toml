@@ -16,8 +16,10 @@ std = []
 async-trait = "0.1.89"
 bytemuck = { version = "1.24.0", default-features = false }
 gibblox-core = { workspace = true }
-# ext4plus and hadris-part have both been offenders in the past; keep exact pins while they are on probationary monitoring.
-hadris-part = { version = "=1.1.2", default-features = false }
+hadris-part = { workspace = true }
+# Constrain the shared hadris implementation even in standalone MBR consumers.
+hadris-io = { workspace = true }
+hadris-macros = { workspace = true }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 
 [dev-dependencies]
