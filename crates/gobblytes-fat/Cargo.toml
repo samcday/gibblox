@@ -15,7 +15,12 @@ std = []
 [dependencies]
 gibblox-core = { workspace = true }
 gobblytes-core = { workspace = true }
-hadris-fat = { version = "1.0.1", default-features = false, features = ["alloc", "async", "read", "lfn"] }
+hadris-fat = { workspace = true, features = ["alloc", "async", "read", "lfn"] }
+# Direct constraints also pin hadris-fat's shared implementation dependencies
+# for downstream consumers. A workspace lockfile alone cannot do that.
+hadris-common = { workspace = true }
+hadris-io = { workspace = true }
+hadris-macros = { workspace = true }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 
 [dev-dependencies]

@@ -80,6 +80,28 @@ gibblox /tmp/pipeline.bin > /tmp/ipxe.iso
 - ext4 load and read operations run without blocking bridges.
 - The crate remains read-only at the gibblox/gobblytes integration surface.
 
+## Updating hadris dependencies
+
+The FAT and MBR adapters constrain the complete hadris dependency family with
+exact versions. FAT/common/I/O/macros use 1.2.0; partition support remains on
+1.1.2. The extra direct I/O, common, and macro dependencies are intentional:
+they constrain transitive versions in published library manifests, where this
+repository's `Cargo.lock` does not apply. All runtime dependencies retain
+`default-features = false` for the `no_std + alloc` path.
+
+Update these pins and the workspace lockfile together. Run the FAT/MBR tests,
+Clippy, and `just ci-consumers` (also included in native/wasm CI). The latter
+builds FAT-only, MBR-only, and combined consumers in separate workspaces with
+fresh lockfiles, using the repository's Rust toolchain. This checks supported
+downstream resolution without inheriting the workspace lock or unrelated
+members' features. It uses local adapter sources and registry dependencies;
+release packaging remains a separate check.
+
+In particular, hadris-fat 1.2.0 returns `Cow<str>` for entry names. A prior
+Clippy cleanup against a lockfile containing hadris-fat 1.0.1 removed the
+necessary `.as_ref()` conversions and broke fresh consumers. Keep the locked
+and downstream graphs aligned when applying dependency-related lint fixes.
+
 ## Usage (native)
 ```rust
 use gibblox_core::{BlockReader, ReadContext};

@@ -843,6 +843,8 @@ dependencies = [
  "bytemuck",
  "futures",
  "gibblox-core",
+ "hadris-io",
+ "hadris-macros",
  "hadris-part",
  "tracing",
 ]
@@ -1029,7 +1031,10 @@ dependencies = [
  "futures",
  "gibblox-core",
  "gobblytes-core",
+ "hadris-common",
  "hadris-fat",
+ "hadris-io",
+ "hadris-macros",
  "tracing",
 ]
 
@@ -1054,19 +1059,20 @@ dependencies = [
 
 [[package]]
 name = "hadris-common"
-version = "1.0.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16faa9f708c5ad3aafafc0761cf98c461582949991b5c901e39c7b65a7b4560b"
+checksum = "d61420d5162c676024b7fab4ad79100f906f0e4ed86fbffbdef94a507697d5ea"
 dependencies = [
  "hadris-io",
  "noalloc",
+ "zerocopy",
 ]
 
 [[package]]
 name = "hadris-fat"
-version = "1.0.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52777e9a7523f78480927c0fb9188030fc9e526e9b885c6eb643ee842a90d8a9"
+checksum = "ea467d002f378a50495a684f6a49796c0def6d03b374ce8c3db9245af168f765"
 dependencies = [
  "bitflags",
  "bytemuck",
@@ -1074,14 +1080,15 @@ dependencies = [
  "hadris-common",
  "hadris-io",
  "hadris-macros",
+ "parse-size",
  "spin",
 ]
 
 [[package]]
 name = "hadris-io"
-version = "1.1.2"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0e6c5ab7e56eeef44f4aaee489bcec9fee52b329cfd1b4388799bb35ee69654"
+checksum = "69c4b18afaa991f1d1a2b90b3ec6144f956dac5bcd00fb9c245c3996dc33254d"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -1089,9 +1096,9 @@ dependencies = [
 
 [[package]]
 name = "hadris-macros"
-version = "1.1.2"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c391784dcf01c2711219a7a614c71f62fe16284b00f96e8be9ed882f1b82e116"
+checksum = "ae6aa7d2c5aab41cb4f4d825c71e08b7a61e6d9e9ea78a9b3ef5ef3eeac9efac"
 dependencies = [
  "proc-macro2",
 ]
@@ -1581,6 +1588,12 @@ name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
+
+[[package]]
+name = "parse-size"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "487f2ccd1e17ce8c1bfab3a65c89525af41cfad4c8659021a1e9a2aacd73b89b"
 
 [[package]]
 name = "percent-encoding"
